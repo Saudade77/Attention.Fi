@@ -268,12 +268,25 @@ export function usePredictionMarket() {
     await tx.wait();
     await fetchMarkets();
   }, [marketContract, fetchMarkets]);
-
+  
   // 自动重连
   useEffect(() => {
-    if (window.ethereum?.selectedAddress) {
-      connect();
-    }
+    // 使用 eth_accounts 检查是否已连接，而不是 selectedAddress
+    const checkConnection = async () => {
+      if (window.ethereum) {
+        try {
+          const accounts = await window.ethereum.request({ 
+            method: 'eth_accounts' 
+          }) as string[];
+          if (accounts && accounts.length > 0) {
+            connect();
+          }
+        } catch (error) {
+          console.error('Failed to check connection:', error);
+        }
+      }
+    };
+    checkConnection();
   }, [connect]);
 
   // 连接后获取市场

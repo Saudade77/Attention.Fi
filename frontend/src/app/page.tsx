@@ -109,13 +109,19 @@ export default function Home() {
     if (!twitterPreview) return;
 
     setShowConfirmModal(false);
-    const success = await registerCreator(twitterPreview.handle);
+    // 传递 Twitter 数据给 registerCreator
+    const success = await registerCreator(twitterPreview.handle, {
+      displayName: twitterPreview.displayName,
+      avatar: twitterPreview.avatar,
+      followers: twitterPreview.followers,
+      following: twitterPreview.following,
+      tweets: twitterPreview.tweets,
+    });
     
     if (success) {
       setNewCreatorHandle('');
       setTwitterPreview(null);
       alert(`🎉 @${twitterPreview.handle} launched successfully!`);
-      await fetchCreators();
     }
   };
 
