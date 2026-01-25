@@ -1,13 +1,18 @@
 {
-  "name": "attention-oracle",
+  "name": "attention-fi-oracle",
   "version": "1.0.0",
+  "description": "Oracle service for Attention.Fi prediction and creator markets",
   "main": "oracle.js",
   "scripts": {
-    "start": "node oracle.js"
+    "start": "node oracle.js",
+    "dev": "node --watch oracle.js"
   },
   "dependencies": {
     "dotenv": "^16.3.1",
     "ethers": "^6.9.0",
     "node-cron": "^3.0.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

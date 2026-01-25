@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.20;
+pragma solidity ^0.8.19;
 
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 
 /// @title PredictionMarketV2 - Polymarket-style prediction market
 /// @notice 使用 USDC 结算 + CPMM 定价模型
@@ -79,7 +79,7 @@ contract PredictionMarketV2 is Ownable, ReentrancyGuard {
     event LiquidityAdded(uint256 indexed marketId, address indexed provider, uint256 amount);
 
     // ============ 构造函数 ============
-    constructor(address _usdc) Ownable(msg.sender) {
+    constructor(address _usdc) {
         require(_usdc != address(0), "Invalid USDC address");
         usdc = IERC20(_usdc);
     }

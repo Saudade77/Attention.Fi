@@ -1,6 +1,8 @@
 {
-  "factory": "0x5FbDB2315678afecb367f032d93F642f64180aa3",
-  "network": "localhost",
-  "deployer": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266",
-  "timestamp": "2026-01-22T03:41:52.314Z"
+  "MockUSDC": "0x33F091DcAE7B45FEa366606686164a208eeC55Bf",
+  "PredictionMarketV2": "0xa197F509FCA21696e70797E603392b16aead2b84",
+  "CreatorMarketV2": "0xDC647caC7a3bc946a3687ffFc981BE2dC246f8aa",
+  "deployer": "0xe4E65EA4721C5f4Fd8ED1D9fcF5670b21CD0cF57",
+  "network": "sepolia",
+  "timestamp": "2026-01-25T03:15:37.523Z"
 }

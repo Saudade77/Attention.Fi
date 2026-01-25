@@ -17,6 +17,6 @@
     "hardhat": "^2.22.17"
   },
   "dependencies": {
-    "@openzeppelin/contracts": "^5.4.0"
+    "@openzeppelin/contracts": "^4.9.6"
   }
 }
