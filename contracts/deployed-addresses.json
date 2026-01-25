@@ -1,8 +1,9 @@
 {
-  "MockUSDC": "0x33F091DcAE7B45FEa366606686164a208eeC55Bf",
-  "PredictionMarketV2": "0xa197F509FCA21696e70797E603392b16aead2b84",
-  "CreatorMarketV2": "0xDC647caC7a3bc946a3687ffFc981BE2dC246f8aa",
+  "MockUSDC": "0x49628b7a908f53908Ee11aB710f601fB158FbF0a",
+  "PredictionMarketV2": "0x3d57BBfF6D673137F7bd8e503F56EDEaD018f575",
+  "CreatorMarketV2": "0xdB2d433F5682981427CD69daC82999735Dac9D51",
   "deployer": "0xe4E65EA4721C5f4Fd8ED1D9fcF5670b21CD0cF57",
   "network": "sepolia",
-  "timestamp": "2026-01-25T03:15:37.523Z"
+  "chainId": 11155111,
+  "timestamp": "2026-01-25T12:11:52.899Z"
 }
