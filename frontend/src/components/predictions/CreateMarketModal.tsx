@@ -11,7 +11,8 @@ interface CreateMarketModalProps {
     imageUrl: string,
     durationDays: number,
     initialLiquidity: string,
-    creatorFeeBps: number
+    creatorFeeBps: number,
+    outcomeLabels?: string[]
   ) => Promise<void>;
 }
 
@@ -30,31 +31,65 @@ export function CreateMarketModal({ isOpen, onClose, onCreate }: CreateMarketMod
   const [durationDays, setDurationDays] = useState('7');
   const [initialLiquidity, setInitialLiquidity] = useState('100');
   const [creatorFee, setCreatorFee] = useState('1');
+  const [marketType, setMarketType] = useState<'binary' | 'multi'>('binary');
+  const [numOutcomes, setNumOutcomes] = useState(3);
+  const [outcomeLabels, setOutcomeLabels] = useState<string[]>(['Option A', 'Option B', 'Option C']);
   const [loading, setLoading] = useState(false);
 
   if (!isOpen) return null;
+
+  const handleNumOutcomesChange = (num: number) => {
+    setNumOutcomes(num);
+    const newLabels = Array.from({ length: num }, (_, i) => 
+      outcomeLabels[i] || `Option ${String.fromCharCode(65 + i)}`
+    );
+    setOutcomeLabels(newLabels);
+  };
+
+  const handleLabelChange = (index: number, value: string) => {
+    const updated = [...outcomeLabels];
+    updated[index] = value;
+    setOutcomeLabels(updated);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!question || !category) return;
 
+    // 验证多选项标签
+    if (marketType === 'multi') {
+      if (outcomeLabels.slice(0, numOutcomes).some(l => !l.trim())) {
+        alert('All outcome labels must be filled');
+        return;
+      }
+    }
+
     setLoading(true);
     try {
+      const labels = marketType === 'binary' 
+        ? ['Yes', 'No']
+        : outcomeLabels.slice(0, numOutcomes);
+      
       await onCreate(
         question,
         category,
         imageUrl,
         parseInt(durationDays),
         initialLiquidity,
-        parseInt(creatorFee) * 100
+        parseInt(creatorFee) * 100,
+        labels
       );
       onClose();
+      // Reset form
       setQuestion('');
       setCategory('crypto');
       setImageUrl('');
       setDurationDays('7');
       setInitialLiquidity('100');
       setCreatorFee('1');
+      setMarketType('binary');
+      setNumOutcomes(3);
+      setOutcomeLabels(['Option A', 'Option B', 'Option C']);
     } catch (error: any) {
       alert(error.reason || error.message);
     } finally {
@@ -78,6 +113,39 @@ export function CreateMarketModal({ isOpen, onClose, onCreate }: CreateMarketMod
 
         {/* Form */}
         <form onSubmit={handleSubmit} className="p-6 space-y-6">
+          {/* Market Type */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+              Market Type
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setMarketType('binary')}
+                className={`p-3 rounded-xl transition-all ${
+                  marketType === 'binary'
+                    ? 'bg-blue-600 text-white shadow-lg'
+                    : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
+                }`}
+              >
+                <div className="font-medium">Yes / No</div>
+                <div className="text-xs opacity-75">Binary outcome</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => setMarketType('multi')}
+                className={`p-3 rounded-xl transition-all ${
+                  marketType === 'multi'
+                    ? 'bg-purple-600 text-white shadow-lg'
+                    : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
+                }`}
+              >
+                <div className="font-medium">Multi-Choice</div>
+                <div className="text-xs opacity-75">3-6 options</div>
+              </button>
+            </div>
+          </div>
+
           {/* Category */}
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
@@ -109,11 +177,55 @@ export function CreateMarketModal({ isOpen, onClose, onCreate }: CreateMarketMod
             <textarea
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
-              placeholder="Will Bitcoin reach $100k by end of 2025?"
+              placeholder={marketType === 'binary' 
+                ? "Will Bitcoin reach $100k by end of 2025?"
+                : "Who will win the 2024 F1 Championship?"
+              }
               className="w-full px-4 py-3 bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-gray-900 dark:text-white placeholder-gray-500 dark:placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none h-24"
               required
             />
           </div>
+
+          {/* Multi-outcome Options */}
+          {marketType === 'multi' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                Number of Outcomes
+              </label>
+              <div className="grid grid-cols-4 gap-2 mb-4">
+                {[3, 4, 5, 6].map((num) => (
+                  <button
+                    key={num}
+                    type="button"
+                    onClick={() => handleNumOutcomesChange(num)}
+                    className={`py-2 rounded-xl font-medium transition-all ${
+                      numOutcomes === num
+                        ? 'bg-purple-600 text-white shadow-lg'
+                        : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
+                    }`}
+                  >
+                    {num}
+                  </button>
+                ))}
+              </div>
+
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+                Outcome Labels
+              </label>
+              <div className="space-y-2">
+                {Array.from({ length: numOutcomes }).map((_, index) => (
+                  <input
+                    key={index}
+                    type="text"
+                    value={outcomeLabels[index] || ''}
+                    onChange={(e) => handleLabelChange(index, e.target.value)}
+                    placeholder={`Option ${String.fromCharCode(65 + index)}`}
+                    className="w-full px-4 py-2 bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg text-gray-900 dark:text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  />
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Image URL */}
           <div>
@@ -170,7 +282,9 @@ export function CreateMarketModal({ isOpen, onClose, onCreate }: CreateMarketMod
                 USDC
               </span>
             </div>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">Minimum: $10 USDC</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+              Minimum: $10 USDC
+            </p>
           </div>
 
           {/* Creator Fee */}
@@ -200,15 +314,27 @@ export function CreateMarketModal({ isOpen, onClose, onCreate }: CreateMarketMod
           {/* Preview */}
           <div className="p-4 bg-gray-50 dark:bg-gray-800/50 rounded-xl border border-gray-200 dark:border-gray-700">
             <div className="text-xs text-gray-500 dark:text-gray-400 mb-2 font-medium">Preview</div>
-            <div className="font-medium text-gray-900 dark:text-white mb-1">
+            <div className="font-medium text-gray-900 dark:text-white mb-2">
               {question || 'Your question here...'}
             </div>
-            <div className="flex flex-wrap gap-3 text-sm text-gray-500 dark:text-gray-400">
+            <div className="flex flex-wrap gap-2 text-sm text-gray-500 dark:text-gray-400 mb-2">
               <span>📁 {category}</span>
               <span>⏱️ {durationDays} days</span>
               <span>💰 ${initialLiquidity}</span>
               <span>💸 {creatorFee}% fee</span>
             </div>
+            {marketType === 'multi' && (
+              <div className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-700">
+                <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">Outcomes:</div>
+                <div className="flex flex-wrap gap-1">
+                  {outcomeLabels.slice(0, numOutcomes).map((label, i) => (
+                    <span key={i} className="text-xs px-2 py-1 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 rounded">
+                      {label || `Option ${i + 1}`}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Submit */}
@@ -226,7 +352,7 @@ export function CreateMarketModal({ isOpen, onClose, onCreate }: CreateMarketMod
                 Creating...
               </span>
             ) : (
-              `Create Market ($${initialLiquidity} USDC)`
+              `Create ${marketType === 'multi' ? 'Multi-Choice' : ''} Market ($${initialLiquidity} USDC)`
             )}
           </button>
         </form>

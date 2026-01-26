@@ -1,13 +1,24 @@
 require('dotenv').config();
 const { ethers } = require('ethers');
 const cron = require('node-cron');
+const express = require('express');
+const cors = require('cors');
+
+// ============ Express API 服务器 ============
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+// 内存存储（生产环境应使用数据库）
+const commentsStore = new Map(); // marketId -> comments[]
 
 // ============ 合约 ABI ============
-// PredictionMarketV2 ABI
+// PredictionMarketV3 ABI
 const PREDICTION_MARKET_ABI = [
   'function getMarketCount() view returns (uint256)',
-  'function getMarketInfo(uint256 marketId) view returns (tuple(string question, string category, string imageUrl, uint256 endTime, uint8 status, uint256 yesShares, uint256 noShares, uint256 liquidityPool, bool outcome, address creator))',
-  'function resolveMarket(uint256 marketId, bool outcome) external',
+  'function getMarketInfo(uint256 marketId) view returns (string question, string category, string imageUrl, uint256 endTime, uint8 status, uint8 numOutcomes, uint256 liquidityPool, uint8 winnerIndex, address creator)',
+  'function getPrices(uint256 marketId) view returns (uint256[] prices)',
+  'function resolveMarket(uint256 marketId, uint8 winnerIndex) external',
   'function owner() view returns (address)'
 ];
 
@@ -21,20 +32,17 @@ const CREATOR_MARKET_ABI = [
 
 class AttentionOracle {
   constructor() {
-    console.log('🔮 Initializing Oracle...');
+    console.log('🔮 Initializing Oracle V3...');
     
-    // 初始化 Provider 和 Wallet
     this.provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
     this.wallet = new ethers.Wallet(process.env.PRIVATE_KEY, this.provider);
     
-    // 初始化合约
     this.predictionMarket = new ethers.Contract(
       process.env.PREDICTION_MARKET_ADDRESS, 
       PREDICTION_MARKET_ABI, 
       this.wallet
     );
     
-    // CreatorMarket 是可选的
     if (process.env.CREATOR_MARKET_ADDRESS) {
       this.creatorMarket = new ethers.Contract(
         process.env.CREATOR_MARKET_ADDRESS, 
@@ -51,7 +59,6 @@ class AttentionOracle {
   // ============ Twitter API ============
   async fetchTwitterData(handle) {
     try {
-      // 移除 @ 符号
       const cleanHandle = handle.replace('@', '');
       
       const response = await fetch(
@@ -87,19 +94,13 @@ class AttentionOracle {
     }
   }
 
-  // 计算互动分数
   calculateEngagementScore(data) {
     if (!data) return 0;
-    
-    // 算法：粉丝数 * 1 + 推文数 * 0.1 + 点赞数 * 0.01
-    // 可以根据需要调整权重
-    const score = Math.floor(
+    return Math.floor(
       data.followers * 1 + 
       data.tweets * 0.1 + 
       data.likes * 0.01
     );
-    
-    return score;
   }
 
   // ============ Creator Market 功能 ============
@@ -136,7 +137,6 @@ class AttentionOracle {
           
           console.log(`   ✅ @${handle}: ${score} (followers: ${twitterData?.followers || 0})`);
           
-          // 避免 API 限流，每次请求间隔 1.5 秒
           await this.sleep(1500);
         } catch (error) {
           console.error(`   ❌ Error processing creator ${i}:`, error.message);
@@ -158,7 +158,7 @@ class AttentionOracle {
 
   // ============ Prediction Market 功能 ============
   async checkAndResolveMarkets() {
-    console.log('\n🎯 [Oracle] Checking prediction markets...');
+    console.log('\n🎯 [Oracle] Checking prediction markets (V3)...');
     
     try {
       const count = await this.predictionMarket.getMarketCount();
@@ -172,41 +172,22 @@ class AttentionOracle {
           const info = await this.predictionMarket.getMarketInfo(i);
           const status = Number(info.status);
           const endTime = Number(info.endTime);
+          const numOutcomes = Number(info.numOutcomes);
           
-          // status: 0=Open, 1=Resolved, 2=Cancelled
-          if (status !== 0) {
-            continue; // 跳过已结算/取消的市场
-          }
-          
-          if (now <= endTime) {
-            continue; // 跳过未到期的市场
-          }
+          if (status !== 0) continue;
+          if (now <= endTime) continue;
 
           console.log(`\n   🔔 Market #${i} expired and needs resolution:`);
           console.log(`      Question: "${info.question}"`);
           console.log(`      Category: ${info.category}`);
+          console.log(`      Outcomes: ${numOutcomes}`);
           console.log(`      End Time: ${new Date(endTime * 1000).toISOString()}`);
-          console.log(`      Yes Shares: ${ethers.formatUnits(info.yesShares, 6)}`);
-          console.log(`      No Shares: ${ethers.formatUnits(info.noShares, 6)}`);
-
-          // ⚠️ 自动结算逻辑
-          // 目前需要手动结算或接入数据源
-          // 以下是示例代码（取消注释后启用）：
           
-          /*
-          // 方法1：基于 Twitter 粉丝增长判断
-          if (info.category === 'Creator Growth') {
-            const outcome = await this.resolveCreatorGrowthMarket(info.question);
-            if (outcome !== null) {
-              const tx = await this.predictionMarket.resolveMarket(i, outcome);
-              await tx.wait();
-              console.log(`      ✅ Resolved as: ${outcome ? 'YES' : 'NO'}`);
-              resolvedCount++;
-            }
-          }
-          */
+          // 获取当前价格
+          const prices = await this.predictionMarket.getPrices(i);
+          console.log(`      Prices: ${prices.map(p => `${Number(p) / 100}%`).join(', ')}`);
           
-          console.log(`      ⚠️ Awaiting manual resolution or API integration`);
+          console.log(`      ⚠️ Awaiting manual resolution`);
           
         } catch (error) {
           console.error(`   ❌ Error checking market ${i}:`, error.message);
@@ -219,48 +200,64 @@ class AttentionOracle {
     }
   }
 
-  // 示例：解析 Creator Growth 类型的市场
-  async resolveCreatorGrowthMarket(question) {
-    // 从问题中提取 handle 和目标粉丝数
-    // 例如: "Will @elonmusk reach 200M followers by end of month?"
-    const handleMatch = question.match(/@(\w+)/);
-    const targetMatch = question.match(/(\d+(?:\.\d+)?)\s*[MKmk]?\s*followers/i);
-    
-    if (!handleMatch || !targetMatch) {
-      console.log('      ⚠️ Could not parse question');
-      return null;
-    }
-
-    const handle = handleMatch[1];
-    let target = parseFloat(targetMatch[1]);
-    
-    // 处理 M/K 后缀
-    if (targetMatch[0].toLowerCase().includes('m')) {
-      target *= 1000000;
-    } else if (targetMatch[0].toLowerCase().includes('k')) {
-      target *= 1000;
-    }
-
-    const twitterData = await this.fetchTwitterData(handle);
-    if (!twitterData) {
-      console.log('      ⚠️ Could not fetch Twitter data');
-      return null;
-    }
-
-    console.log(`      📊 @${handle} has ${twitterData.followers} followers (target: ${target})`);
-    return twitterData.followers >= target;
-  }
-
-  // 工具函数
   sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
+  // ============ 启动 API 服务 ============
+  startAPIServer() {
+    const PORT = process.env.PORT || 3001;
+
+    // 健康检查
+    app.get('/health', (req, res) => {
+      res.json({ status: 'ok', timestamp: Date.now() });
+    });
+
+    // 获取市场评论
+    app.get('/api/market/:id/comments', (req, res) => {
+      const marketId = parseInt(req.params.id);
+      const comments = commentsStore.get(marketId) || [];
+      res.json(comments);
+    });
+
+    // 发表评论
+    app.post('/api/market/:id/comments', (req, res) => {
+      const marketId = parseInt(req.params.id);
+      const { content, user } = req.body;
+      
+      if (!content || !user) {
+        return res.status(400).json({ error: 'Missing content or user' });
+      }
+
+      const comment = {
+        id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        user,
+        content: content.slice(0, 280),
+        timestamp: Date.now()
+      };
+
+      if (!commentsStore.has(marketId)) {
+        commentsStore.set(marketId, []);
+      }
+      commentsStore.get(marketId).push(comment);
+
+      // 限制每个市场最多 100 条评论
+      if (commentsStore.get(marketId).length > 100) {
+        commentsStore.set(marketId, commentsStore.get(marketId).slice(-100));
+      }
+
+      res.json(comment);
+    });
+
+    app.listen(PORT, () => {
+      console.log(`🌐 API Server running on port ${PORT}`);
+    });
+  }
+
   // ============ 启动 Oracle ============
   async start() {
-    console.log('\n🚀 Starting Attention Oracle...\n');
+    console.log('\n🚀 Starting Attention Oracle V3...\n');
     
-    // 验证配置
     try {
       const balance = await this.provider.getBalance(this.wallet.address);
       console.log(`💰 Oracle wallet balance: ${ethers.formatEther(balance)} ETH`);
@@ -273,26 +270,27 @@ class AttentionOracle {
       return;
     }
 
+    // 启动 API 服务
+    this.startAPIServer();
+
     // 定时任务
-    // 每小时更新一次 Creator 互动分数
     cron.schedule('0 * * * *', () => {
       console.log('\n⏰ Scheduled: Updating engagements...');
       this.updateAllEngagements();
     });
     
-    // 每 10 分钟检查一次市场结算
     cron.schedule('*/10 * * * *', () => {
       console.log('\n⏰ Scheduled: Checking markets...');
       this.checkAndResolveMarkets();
     });
     
-    // 启动时立即执行一次
+    // 启动时立即执行
     console.log('🔄 Running initial checks...\n');
     await this.checkAndResolveMarkets();
     await this.updateAllEngagements();
     
-    console.log('\n✅ Oracle is running!');
-    console.log('   📅 Engagement updates: Every hour (at :00)');
+    console.log('\n✅ Oracle V3 is running!');
+    console.log('   📅 Engagement updates: Every hour');
     console.log('   📅 Market checks: Every 10 minutes');
     console.log('\n   Press Ctrl+C to stop.\n');
   }

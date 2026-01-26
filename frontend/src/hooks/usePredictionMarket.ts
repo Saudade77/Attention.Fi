@@ -1,131 +1,431 @@
-import { useState, useCallback, useEffect } from 'react';
-import { Contract, BrowserProvider, formatUnits, parseUnits } from 'ethers';
-import { PREDICTION_MARKET_ADDRESS, USDC_ADDRESS, USDC_DECIMALS } from '@/constants/config';
-import PredictionMarketABI from '@/constants/PredictionMarketV2.json';
-import USDCABI from '@/constants/MockUSDC.json';
+'use client';
+
+import { useState, useEffect, useCallback } from 'react';
+import { useAccount, usePublicClient, useWalletClient } from 'wagmi';
+import { parseUnits, formatUnits, getContract } from 'viem';
+import { 
+  PREDICTION_MARKET_ADDRESS, 
+  USDC_ADDRESS, 
+  USDC_DECIMALS,
+} from '@/constants/config';
+
+// ABIs
+const PREDICTION_MARKET_ABI = [
+  {
+    name: 'getMarketCount',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
+    name: 'getMarketInfo',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'marketId', type: 'uint256' }],
+    outputs: [
+      { name: 'question', type: 'string' },
+      { name: 'category', type: 'string' },
+      { name: 'imageUrl', type: 'string' },
+      { name: 'endTime', type: 'uint256' },
+      { name: 'status', type: 'uint8' },
+      { name: 'numOutcomes', type: 'uint8' },
+      { name: 'liquidityPool', type: 'uint256' },
+      { name: 'winnerIndex', type: 'uint8' },
+      { name: 'creator', type: 'address' },
+    ],
+  },
+  {
+    name: 'getMarketOutcomes',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'marketId', type: 'uint256' }],
+    outputs: [
+      { name: 'labels', type: 'string[]' },
+      { name: 'shares', type: 'uint256[]' },
+    ],
+  },
+  {
+    name: 'getPrices',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'marketId', type: 'uint256' }],
+    outputs: [{ name: 'prices', type: 'uint256[]' }],
+  },
+  {
+    name: 'getUserPosition',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'marketId', type: 'uint256' },
+      { name: 'user', type: 'address' },
+    ],
+    outputs: [
+      { name: 'shares', type: 'uint256[]' },
+      { name: 'hasClaimed', type: 'bool' },
+    ],
+  },
+  {
+    name: 'getPriceHistory',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'marketId', type: 'uint256' }],
+    outputs: [
+      { name: 'timestamps', type: 'uint256[]' },
+      { name: 'prices', type: 'uint256[][]' },
+    ],
+  },
+  {
+    name: 'getAllUserActiveOrders',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'user', type: 'address' }],
+    outputs: [{
+      type: 'tuple[]',
+      components: [
+        { name: 'id', type: 'uint256' },
+        { name: 'marketId', type: 'uint256' },
+        { name: 'user', type: 'address' },
+        { name: 'outcomeIndex', type: 'uint8' },
+        { name: 'shares', type: 'uint256' },
+        { name: 'price', type: 'uint256' },
+        { name: 'usdcDeposit', type: 'uint256' },
+        { name: 'timestamp', type: 'uint256' },
+        { name: 'isBuy', type: 'bool' },
+        { name: 'status', type: 'uint8' },
+      ],
+    }],
+  },
+  {
+    name: 'owner',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'address' }],
+  },
+  {
+    name: 'createMarket',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'question', type: 'string' },
+      { name: 'category', type: 'string' },
+      { name: 'imageUrl', type: 'string' },
+      { name: 'duration', type: 'uint256' },
+      { name: 'initialLiquidity', type: 'uint256' },
+      { name: 'creatorFee', type: 'uint256' },
+      { name: 'outcomeLabels', type: 'string[]' },
+    ],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
+    name: 'deleteMarket',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'marketId', type: 'uint256' }],
+    outputs: [],
+  },
+  {
+    name: 'buyShares',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'marketId', type: 'uint256' },
+      { name: 'outcomeIndex', type: 'uint8' },
+      { name: 'usdcAmount', type: 'uint256' },
+      { name: 'minShares', type: 'uint256' },
+    ],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
+    name: 'sellShares',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'marketId', type: 'uint256' },
+      { name: 'outcomeIndex', type: 'uint8' },
+      { name: 'shares', type: 'uint256' },
+      { name: 'minUsdc', type: 'uint256' },
+    ],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
+    name: 'placeBuyOrder',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'marketId', type: 'uint256' },
+      { name: 'outcomeIndex', type: 'uint8' },
+      { name: 'shares', type: 'uint256' },
+      { name: 'price', type: 'uint256' },
+    ],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
+    name: 'placeSellOrder',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'marketId', type: 'uint256' },
+      { name: 'outcomeIndex', type: 'uint8' },
+      { name: 'shares', type: 'uint256' },
+      { name: 'price', type: 'uint256' },
+    ],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
+    name: 'cancelOrder',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'orderId', type: 'uint256' }],
+    outputs: [],
+  },
+  {
+    name: 'claimWinnings',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'marketId', type: 'uint256' }],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
+    name: 'resolveMarket',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'marketId', type: 'uint256' },
+      { name: 'winnerIndex', type: 'uint8' },
+    ],
+    outputs: [],
+  },
+] as const;
+
+const USDC_ABI = [
+  {
+    name: 'balanceOf',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'account', type: 'address' }],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
+    name: 'allowance',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'owner', type: 'address' },
+      { name: 'spender', type: 'address' },
+    ],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
+    name: 'approve',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'spender', type: 'address' },
+      { name: 'amount', type: 'uint256' },
+    ],
+    outputs: [{ type: 'bool' }],
+  },
+  {
+    name: 'mint',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'to', type: 'address' },
+      { name: 'amount', type: 'uint256' },
+    ],
+    outputs: [],
+  },
+] as const;
 
 export interface Market {
   id: number;
   question: string;
   category: string;
-  imageUrl: string;
+  imageUrl?: string;
   endTime: number;
-  status: number; // 0=Open, 1=Resolved, 2=Cancelled
+  status: number;
+  numOutcomes: number;
+  outcomeLabels: string[];
+  outcomeShares: bigint[];
+  prices: number[];
+  liquidityPool: bigint;
+  winnerIndex: number;
+  creator: string;
+  userShares: bigint[];
+  hasClaimed: boolean;
+  volume: string;
+  // 兼容旧接口 - 这些是必需的！
   yesShares: bigint;
   noShares: bigint;
-  liquidityPool: bigint;
-  outcome: boolean;
-  creator: string;
   yesPrice: number;
   noPrice: number;
   userYesShares: bigint;
   userNoShares: bigint;
-  hasClaimed: boolean;
-  volume: string; // 格式化后的 USDC 金额
+  outcome: boolean;
+}
+
+export interface LimitOrder {
+  id: number;
+  marketId: number;
+  user: string;
+  outcomeIndex: number;
+  shares: bigint;
+  price: number;
+  usdcDeposit: bigint;
+  timestamp: number;
+  isBuy: boolean;
+  status: number;
+}
+
+export interface PriceHistory {
+  timestamps: number[];
+  prices: number[][];
 }
 
 export function usePredictionMarket() {
-  const [provider, setProvider] = useState<BrowserProvider | null>(null);
-  const [marketContract, setMarketContract] = useState<Contract | null>(null);
-  const [usdcContract, setUsdcContract] = useState<Contract | null>(null);
-  const [address, setAddress] = useState<string>('');
-  const [isConnected, setIsConnected] = useState(false);
+  const { address, isConnected } = useAccount();
+  const publicClient = usePublicClient();
+  const { data: walletClient } = useWalletClient();
+
   const [isOwner, setIsOwner] = useState(false);
   const [markets, setMarkets] = useState<Market[]>([]);
+  const [userOrders, setUserOrders] = useState<LimitOrder[]>([]);
   const [loading, setLoading] = useState(false);
-  const [usdcBalance, setUsdcBalance] = useState<string>('0');
-  const [usdcAllowance, setUsdcAllowance] = useState<bigint>(0n);
+  const [usdcBalance, setUsdcBalance] = useState('0');
 
-  // 连接钱包
-  const connect = useCallback(async () => {
-    if (typeof window.ethereum === 'undefined') {
-      alert('Please install MetaMask');
-      return;
-    }
+  // 检查是否是 owner
+  useEffect(() => {
+    const checkOwner = async () => {
+      if (!publicClient || !address) {
+        setIsOwner(false);
+        return;
+      }
+      try {
+        const owner = await publicClient.readContract({
+          address: PREDICTION_MARKET_ADDRESS as `0x${string}`,
+          abi: PREDICTION_MARKET_ABI,
+          functionName: 'owner',
+        });
+        setIsOwner((owner as string).toLowerCase() === address.toLowerCase());
+      } catch {
+        setIsOwner(false);
+      }
+    };
+    checkOwner();
+  }, [publicClient, address]);
 
+  // 获取 USDC 余额
+  const fetchBalance = useCallback(async () => {
+    if (!publicClient || !address) return;
     try {
-      const provider = new BrowserProvider(window.ethereum);
-      await provider.send('eth_requestAccounts', []);
-      const signer = await provider.getSigner();
-      const address = await signer.getAddress();
-
-      const marketContract = new Contract(PREDICTION_MARKET_ADDRESS, PredictionMarketABI, signer);
-      const usdcContract = new Contract(USDC_ADDRESS, USDCABI, signer);
-
-      // 检查是否是 Owner
-      const owner = await marketContract.owner();
-      const isOwner = owner.toLowerCase() === address.toLowerCase();
-
-      setProvider(provider);
-      setMarketContract(marketContract);
-      setUsdcContract(usdcContract);
-      setAddress(address);
-      setIsConnected(true);
-      setIsOwner(isOwner);
-
-      // 获取 USDC 余额和授权额度
-      const balance = await usdcContract.balanceOf(address);
-      const allowance = await usdcContract.allowance(address, PREDICTION_MARKET_ADDRESS);
-      setUsdcBalance(formatUnits(balance, USDC_DECIMALS));
-      setUsdcAllowance(allowance);
-
+      const balance = await publicClient.readContract({
+        address: USDC_ADDRESS as `0x${string}`,
+        abi: USDC_ABI,
+        functionName: 'balanceOf',
+        args: [address],
+      });
+      setUsdcBalance(formatUnits(balance as bigint, USDC_DECIMALS));
     } catch (error) {
-      console.error('Connection failed:', error);
+      console.error('Failed to fetch balance:', error);
     }
-  }, []);
-
-  const disconnect = useCallback(() => {
-    setProvider(null);
-    setMarketContract(null);
-    setUsdcContract(null);
-    setAddress('');
-    setIsConnected(false);
-    setIsOwner(false);
-  }, []);
+  }, [publicClient, address]);
 
   // 获取市场列表
   const fetchMarkets = useCallback(async () => {
-    if (!marketContract) return;
+    if (!publicClient) return;
     setLoading(true);
 
     try {
-      const count = await marketContract.getMarketCount();
+      const count = await publicClient.readContract({
+        address: PREDICTION_MARKET_ADDRESS as `0x${string}`,
+        abi: PREDICTION_MARKET_ABI,
+        functionName: 'getMarketCount',
+      });
+
       const list: Market[] = [];
 
       for (let i = 0; i < Number(count); i++) {
-        const info = await marketContract.getMarketInfo(i);
-        const [yesPrice, noPrice] = await marketContract.getPrice(i);
-        
-        let userYesShares = 0n;
-        let userNoShares = 0n;
-        let hasClaimed = false;
-        
-        if (address) {
-          const position = await marketContract.getUserPosition(i, address);
-          userYesShares = position.yesShares;
-          userNoShares = position.noShares;
-          hasClaimed = position.hasClaimed;
-        }
+        try {
+          const info = await publicClient.readContract({
+            address: PREDICTION_MARKET_ADDRESS as `0x${string}`,
+            abi: PREDICTION_MARKET_ABI,
+            functionName: 'getMarketInfo',
+            args: [BigInt(i)],
+          }) as any;
 
-        list.push({
-          id: i,
-          question: info.question,
-          category: info.category,
-          imageUrl: info.imageUrl,
-          endTime: Number(info.endTime),
-          status: Number(info.status),
-          yesShares: info.yesShares,
-          noShares: info.noShares,
-          liquidityPool: info.liquidityPool,
-          outcome: info.outcome,
-          creator: info.creator,
-          yesPrice: Number(yesPrice),
-          noPrice: Number(noPrice),
-          userYesShares,
-          userNoShares,
-          hasClaimed,
-          volume: formatUnits(info.liquidityPool, USDC_DECIMALS),
-        });
+          // 跳过已删除的市场
+          if (Number(info[4]) === 3) continue;
+
+          const outcomes = await publicClient.readContract({
+            address: PREDICTION_MARKET_ADDRESS as `0x${string}`,
+            abi: PREDICTION_MARKET_ABI,
+            functionName: 'getMarketOutcomes',
+            args: [BigInt(i)],
+          }) as any;
+
+          const rawPrices = await publicClient.readContract({
+            address: PREDICTION_MARKET_ADDRESS as `0x${string}`,
+            abi: PREDICTION_MARKET_ABI,
+            functionName: 'getPrices',
+            args: [BigInt(i)],
+          }) as bigint[];
+
+          const rawPriceNumbers = rawPrices.map((p) => Number(p));
+          const priceSum = rawPriceNumbers.reduce((a, b) => a + b, 0);
+          const normalizedPrices = priceSum > 0
+            ? rawPriceNumbers.map((p) => Math.round((p / priceSum) * 10000))
+            : rawPriceNumbers;
+
+          let userShares: bigint[] = [];
+          let hasClaimed = false;
+
+          if (address) {
+            try {
+              const position = await publicClient.readContract({
+                address: PREDICTION_MARKET_ADDRESS as `0x${string}`,
+                abi: PREDICTION_MARKET_ABI,
+                functionName: 'getUserPosition',
+                args: [BigInt(i), address],
+              }) as any;
+              userShares = [...position[0]];
+              hasClaimed = position[1];
+            } catch (e) {
+              console.error('Failed to get user position:', e);
+            }
+          }
+
+          const numOutcomes = Number(info[5]);
+
+          list.push({
+            id: i,
+            question: info[0],
+            category: info[1],
+            imageUrl: info[2],
+            endTime: Number(info[3]),
+            status: Number(info[4]),
+            numOutcomes,
+            outcomeLabels: [...outcomes[0]],
+            outcomeShares: [...outcomes[1]],
+            prices: normalizedPrices,
+            liquidityPool: info[6],
+            winnerIndex: Number(info[7]),
+            creator: info[8],
+            userShares: userShares.length > 0 ? userShares : Array(numOutcomes).fill(0n),
+            hasClaimed,
+            volume: formatUnits(info[6] as bigint, USDC_DECIMALS),
+            yesPrice: Math.round(normalizedPrices[0] / 100),
+            noPrice: normalizedPrices.length > 1 ? Math.round(normalizedPrices[1] / 100) : Math.round((10000 - normalizedPrices[0]) / 100),
+            userYesShares: userShares[0] || 0n,
+            userNoShares: userShares[1] || 0n,
+            outcome: Number(info[7]) === 0,
+            yesShares: outcomes[1][0] || 0n,
+            noShares: outcomes[1][1] || 0n,
+          });
+        } catch (e) {
+          console.error(`Failed to fetch market ${i}:`, e);
+        }
       }
 
       list.sort((a, b) => b.id - a.id);
@@ -135,31 +435,85 @@ export function usePredictionMarket() {
     } finally {
       setLoading(false);
     }
-  }, [marketContract, address]);
+  }, [publicClient, address]);
 
-  // 授权 USDC
-  const approveUSDC = useCallback(async (amount: string) => {
-    if (!usdcContract) throw new Error('Not connected');
-    
-    const amountWei = parseUnits(amount, USDC_DECIMALS);
-    const tx = await usdcContract.approve(PREDICTION_MARKET_ADDRESS, amountWei);
-    await tx.wait();
-    
-    const newAllowance = await usdcContract.allowance(address, PREDICTION_MARKET_ADDRESS);
-    setUsdcAllowance(newAllowance);
-  }, [usdcContract, address]);
+  // 获取用户订单
+  const fetchUserOrders = useCallback(async () => {
+    if (!publicClient || !address) return;
+    try {
+      const orders = await publicClient.readContract({
+        address: PREDICTION_MARKET_ADDRESS as `0x${string}`,
+        abi: PREDICTION_MARKET_ABI,
+        functionName: 'getAllUserActiveOrders',
+        args: [address],
+      }) as any[];
 
-  // 领取测试 USDC
-  const faucet = useCallback(async (amount: string = '1000') => {
-    if (!usdcContract) throw new Error('Not connected');
-    
+      const formattedOrders: LimitOrder[] = orders.map((order) => ({
+        id: Number(order.id),
+        marketId: Number(order.marketId),
+        user: order.user,
+        outcomeIndex: Number(order.outcomeIndex),
+        shares: order.shares,
+        price: Number(order.price),
+        usdcDeposit: order.usdcDeposit,
+        timestamp: Number(order.timestamp),
+        isBuy: order.isBuy,
+        status: Number(order.status),
+      }));
+
+      setUserOrders(formattedOrders);
+    } catch (error) {
+      console.error('Failed to fetch user orders:', error);
+    }
+  }, [publicClient, address]);
+
+  // 初始化加载
+  useEffect(() => {
+    if (publicClient) {
+      fetchMarkets();
+      fetchBalance();
+      if (address) {
+        fetchUserOrders();
+      }
+    }
+  }, [publicClient, address, fetchMarkets, fetchBalance, fetchUserOrders]);
+
+  // 确保 allowance
+  const ensureAllowance = useCallback(async (requiredAmount: bigint) => {
+    if (!publicClient || !walletClient || !address) return;
+
+    const currentAllowance = await publicClient.readContract({
+      address: USDC_ADDRESS as `0x${string}`,
+      abi: USDC_ABI,
+      functionName: 'allowance',
+      args: [address, PREDICTION_MARKET_ADDRESS as `0x${string}`],
+    }) as bigint;
+
+    if (currentAllowance < requiredAmount) {
+      const approveAmount = requiredAmount * 10n;
+      const hash = await walletClient.writeContract({
+        address: USDC_ADDRESS as `0x${string}`,
+        abi: USDC_ABI,
+        functionName: 'approve',
+        args: [PREDICTION_MARKET_ADDRESS as `0x${string}`, approveAmount],
+      });
+      await publicClient.waitForTransactionReceipt({ hash });
+    }
+  }, [publicClient, walletClient, address]);
+
+  // Faucet
+  const faucet = useCallback(async (amount: string) => {
+    if (!walletClient || !publicClient || !address) return;
     const amountWei = parseUnits(amount, USDC_DECIMALS);
-    const tx = await usdcContract.faucet(amountWei);
-    await tx.wait();
-    
-    const balance = await usdcContract.balanceOf(address);
-    setUsdcBalance(formatUnits(balance, USDC_DECIMALS));
-  }, [usdcContract, address]);
+    const hash = await walletClient.writeContract({
+      address: USDC_ADDRESS as `0x${string}`,
+      abi: USDC_ABI,
+      functionName: 'mint',
+      args: [address, amountWei],
+    });
+    await publicClient.waitForTransactionReceipt({ hash });
+    await fetchBalance();
+  }, [walletClient, publicClient, address, fetchBalance]);
 
   // 创建市场
   const createMarket = useCallback(async (
@@ -168,155 +522,175 @@ export function usePredictionMarket() {
     imageUrl: string,
     durationDays: number,
     initialLiquidity: string,
-    creatorFeeBps: number = 100
+    creatorFeeBps: number,
+    outcomeLabels: string[] = ['Yes', 'No']
   ) => {
-    if (!marketContract || !usdcContract) throw new Error('Not connected');
-
+    if (!walletClient || !publicClient) throw new Error('Not connected');
     const liquidityWei = parseUnits(initialLiquidity, USDC_DECIMALS);
-    const durationSeconds = durationDays * 24 * 60 * 60;
+    await ensureAllowance(liquidityWei);
 
-    // 检查授权
-    const allowance = await usdcContract.allowance(address, PREDICTION_MARKET_ADDRESS);
-    if (allowance < liquidityWei) {
-      const approveTx = await usdcContract.approve(PREDICTION_MARKET_ADDRESS, liquidityWei);
-      await approveTx.wait();
-    }
-
-    const tx = await marketContract.createMarket(
-      question,
-      category,
-      imageUrl,
-      durationSeconds,
-      liquidityWei,
-      creatorFeeBps
-    );
-    await tx.wait();
+    const hash = await walletClient.writeContract({
+      address: PREDICTION_MARKET_ADDRESS as `0x${string}`,
+      abi: PREDICTION_MARKET_ABI,
+      functionName: 'createMarket',
+      args: [question, category, imageUrl, BigInt(durationDays * 24 * 60 * 60), liquidityWei, BigInt(creatorFeeBps), outcomeLabels],
+    });
+    await publicClient.waitForTransactionReceipt({ hash });
     await fetchMarkets();
-  }, [marketContract, usdcContract, address, fetchMarkets]);
+    await fetchBalance();
+  }, [walletClient, publicClient, ensureAllowance, fetchMarkets, fetchBalance]);
 
-  // 购买份额
-  const buyShares = useCallback(async (
-    marketId: number,
-    isYes: boolean,
-    usdcAmount: string,
-    minShares: bigint = 0n
-  ) => {
-    if (!marketContract || !usdcContract) throw new Error('Not connected');
-
-    const amountWei = parseUnits(usdcAmount, USDC_DECIMALS);
-
-    // 检查授权
-    const allowance = await usdcContract.allowance(address, PREDICTION_MARKET_ADDRESS);
-    if (allowance < amountWei) {
-      const approveTx = await usdcContract.approve(PREDICTION_MARKET_ADDRESS, amountWei * 10n);
-      await approveTx.wait();
-      setUsdcAllowance(amountWei * 10n);
-    }
-
-    const tx = await marketContract.buyShares(marketId, isYes, amountWei, minShares);
-    await tx.wait();
-    
-    // 更新余额
-    const balance = await usdcContract.balanceOf(address);
-    setUsdcBalance(formatUnits(balance, USDC_DECIMALS));
-    
+  // 删除市场
+  const deleteMarket = useCallback(async (marketId: number) => {
+    if (!walletClient || !publicClient) throw new Error('Not connected');
+    const hash = await walletClient.writeContract({
+      address: PREDICTION_MARKET_ADDRESS as `0x${string}`,
+      abi: PREDICTION_MARKET_ABI,
+      functionName: 'deleteMarket',
+      args: [BigInt(marketId)],
+    });
+    await publicClient.waitForTransactionReceipt({ hash });
     await fetchMarkets();
-  }, [marketContract, usdcContract, address, fetchMarkets]);
+  }, [walletClient, publicClient, fetchMarkets]);
 
-  // 卖出份额
-  const sellShares = useCallback(async (
-    marketId: number,
-    isYes: boolean,
-    sharesAmount: bigint,
-    minUSDC: bigint = 0n
-  ) => {
-    if (!marketContract) throw new Error('Not connected');
+  // 买入
+  const buyShares = useCallback(async (marketId: number, outcomeIndex: number | boolean, amount: string) => {
+    if (!walletClient || !publicClient) throw new Error('Not connected');
+    const idx = typeof outcomeIndex === 'boolean' ? (outcomeIndex ? 0 : 1) : outcomeIndex;
+    const amountWei = parseUnits(amount, USDC_DECIMALS);
+    await ensureAllowance(amountWei);
 
-    const tx = await marketContract.sellShares(marketId, isYes, sharesAmount, minUSDC);
-    await tx.wait();
-    
-    // 更新余额
-    if (usdcContract) {
-      const balance = await usdcContract.balanceOf(address);
-      setUsdcBalance(formatUnits(balance, USDC_DECIMALS));
-    }
-    
+    const hash = await walletClient.writeContract({
+      address: PREDICTION_MARKET_ADDRESS as `0x${string}`,
+      abi: PREDICTION_MARKET_ABI,
+      functionName: 'buyShares',
+      args: [BigInt(marketId), idx, amountWei, 0n],
+    });
+    await publicClient.waitForTransactionReceipt({ hash });
     await fetchMarkets();
-  }, [marketContract, usdcContract, address, fetchMarkets]);
+    await fetchBalance();
+  }, [walletClient, publicClient, ensureAllowance, fetchMarkets, fetchBalance]);
+
+  // 卖出
+  const sellShares = useCallback(async (marketId: number, outcomeIndex: number | boolean, shares: bigint | string) => {
+    if (!walletClient || !publicClient) throw new Error('Not connected');
+    const idx = typeof outcomeIndex === 'boolean' ? (outcomeIndex ? 0 : 1) : outcomeIndex;
+    const sharesWei = typeof shares === 'string' ? parseUnits(shares, 18) : shares;
+
+    const hash = await walletClient.writeContract({
+      address: PREDICTION_MARKET_ADDRESS as `0x${string}`,
+      abi: PREDICTION_MARKET_ABI,
+      functionName: 'sellShares',
+      args: [BigInt(marketId), idx, sharesWei, 0n],
+    });
+    await publicClient.waitForTransactionReceipt({ hash });
+    await fetchMarkets();
+    await fetchBalance();
+  }, [walletClient, publicClient, fetchMarkets, fetchBalance]);
+
+  // 限价买单
+  const placeBuyOrder = useCallback(async (marketId: number, outcomeIndex: number, shares: string, price: number) => {
+    if (!walletClient || !publicClient) throw new Error('Not connected');
+    const sharesWei = parseUnits(shares, 18);
+    const usdcRequired = (sharesWei * BigInt(price)) / (100n * BigInt(10 ** 12));
+    await ensureAllowance(usdcRequired + BigInt(10 ** 6));
+
+    const hash = await walletClient.writeContract({
+      address: PREDICTION_MARKET_ADDRESS as `0x${string}`,
+      abi: PREDICTION_MARKET_ABI,
+      functionName: 'placeBuyOrder',
+      args: [BigInt(marketId), outcomeIndex, sharesWei, BigInt(price * 100)],
+    });
+    await publicClient.waitForTransactionReceipt({ hash });
+    await fetchMarkets();
+    await fetchUserOrders();
+    await fetchBalance();
+  }, [walletClient, publicClient, ensureAllowance, fetchMarkets, fetchUserOrders, fetchBalance]);
+
+  // 限价卖单
+  const placeSellOrder = useCallback(async (marketId: number, outcomeIndex: number, shares: string, price: number) => {
+    if (!walletClient || !publicClient) throw new Error('Not connected');
+    const sharesWei = parseUnits(shares, 18);
+
+    const hash = await walletClient.writeContract({
+      address: PREDICTION_MARKET_ADDRESS as `0x${string}`,
+      abi: PREDICTION_MARKET_ABI,
+      functionName: 'placeSellOrder',
+      args: [BigInt(marketId), outcomeIndex, sharesWei, BigInt(price * 100)],
+    });
+    await publicClient.waitForTransactionReceipt({ hash });
+    await fetchMarkets();
+    await fetchUserOrders();
+  }, [walletClient, publicClient, fetchMarkets, fetchUserOrders]);
+
+  // 取消订单
+  const cancelOrder = useCallback(async (orderId: number) => {
+    if (!walletClient || !publicClient) throw new Error('Not connected');
+    const hash = await walletClient.writeContract({
+      address: PREDICTION_MARKET_ADDRESS as `0x${string}`,
+      abi: PREDICTION_MARKET_ABI,
+      functionName: 'cancelOrder',
+      args: [BigInt(orderId)],
+    });
+    await publicClient.waitForTransactionReceipt({ hash });
+    await fetchMarkets();
+    await fetchUserOrders();
+    await fetchBalance();
+  }, [walletClient, publicClient, fetchMarkets, fetchUserOrders, fetchBalance]);
 
   // 领取奖励
   const claimWinnings = useCallback(async (marketId: number) => {
-    if (!marketContract) throw new Error('Not connected');
-
-    const tx = await marketContract.claimWinnings(marketId);
-    await tx.wait();
-    
-    // 更新余额
-    if (usdcContract) {
-      const balance = await usdcContract.balanceOf(address);
-      setUsdcBalance(formatUnits(balance, USDC_DECIMALS));
-    }
-    
+    if (!walletClient || !publicClient) throw new Error('Not connected');
+    const hash = await walletClient.writeContract({
+      address: PREDICTION_MARKET_ADDRESS as `0x${string}`,
+      abi: PREDICTION_MARKET_ABI,
+      functionName: 'claimWinnings',
+      args: [BigInt(marketId)],
+    });
+    await publicClient.waitForTransactionReceipt({ hash });
     await fetchMarkets();
-  }, [marketContract, usdcContract, address, fetchMarkets]);
+    await fetchBalance();
+  }, [walletClient, publicClient, fetchMarkets, fetchBalance]);
 
-  // 解决市场（仅 Owner）
-  const resolveMarket = useCallback(async (marketId: number, outcome: boolean) => {
-    if (!marketContract) throw new Error('Not connected');
-
-    const tx = await marketContract.resolveMarket(marketId, outcome);
-    await tx.wait();
-    await fetchMarkets();
-  }, [marketContract, fetchMarkets]);
-  
-  // 自动重连
-  useEffect(() => {
-    // 使用 eth_accounts 检查是否已连接，而不是 selectedAddress
-    const checkConnection = async () => {
-      if (window.ethereum) {
-        try {
-          const accounts = await window.ethereum.request({ 
-            method: 'eth_accounts' 
-          }) as string[];
-          if (accounts && accounts.length > 0) {
-            connect();
-          }
-        } catch (error) {
-          console.error('Failed to check connection:', error);
-        }
-      }
-    };
-    checkConnection();
-  }, [connect]);
-
-  // 连接后获取市场
-  useEffect(() => {
-    if (marketContract) {
-      fetchMarkets();
+  // 价格历史
+  const getPriceHistory = useCallback(async (marketId: number): Promise<PriceHistory> => {
+    if (!publicClient) return { timestamps: [], prices: [] };
+    try {
+      const result = await publicClient.readContract({
+        address: PREDICTION_MARKET_ADDRESS as `0x${string}`,
+        abi: PREDICTION_MARKET_ABI,
+        functionName: 'getPriceHistory',
+        args: [BigInt(marketId)],
+      }) as any;
+      return {
+        timestamps: result[0].map((t: bigint) => Number(t)),
+        prices: result[1].map((p: bigint[]) => p.map((v) => Number(v))),
+      };
+    } catch {
+      return { timestamps: [], prices: [] };
     }
-  }, [marketContract, fetchMarkets]);
+  }, [publicClient]);
 
   return {
-    // 状态
-    provider,
-    address,
+    address: address || '',
     isConnected,
     isOwner,
     markets,
+    userOrders,
     loading,
     usdcBalance,
-    usdcAllowance,
-    
-    // 方法
-    connect,
-    disconnect,
-    fetchMarkets,
-    approveUSDC,
     faucet,
     createMarket,
+    deleteMarket,
     buyShares,
     sellShares,
+    placeBuyOrder,
+    placeSellOrder,
+    cancelOrder,
     claimWinnings,
-    resolveMarket,
+    getPriceHistory,
+    fetchMarkets,
+    fetchUserOrders,
+    fetchBalance,
   };
 }

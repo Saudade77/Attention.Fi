@@ -2,45 +2,45 @@
 
 import { useState } from 'react';
 import { MarketCard } from './MarketCard';
-
-interface Market {
-  id: number;
-  question: string;
-  category: string;
-  endTime: number;
-  status: number;
-  yesShares: bigint;
-  noShares: bigint;
-  yesPrice: number;
-  noPrice: number;
-  userYesShares: bigint;
-  userNoShares: bigint;
-  hasClaimed: boolean;
-  volume: string;
-  outcome: boolean;
-}
+import { Market, LimitOrder, PriceHistory } from '@/hooks/usePredictionMarket';
 
 interface MarketListProps {
   markets: Market[];
-  onBuy: (marketId: number, isYes: boolean, amount: string) => Promise<void>;
-  onSell: (marketId: number, isYes: boolean, shares: bigint) => Promise<void>;
+  userOrders?: LimitOrder[];
+  isOwner?: boolean;
+  onBuy: (marketId: number, outcomeIndex: number | boolean, amount: string) => Promise<void>;
+  onSell: (marketId: number, outcomeIndex: number | boolean, shares: bigint | string) => Promise<void>;
   onClaim: (marketId: number) => Promise<void>;
+  onDelete?: (marketId: number) => Promise<void>;
+  onPlaceBuyOrder?: (marketId: number, outcomeIndex: number, shares: string, price: number) => Promise<void>;
+  onPlaceSellOrder?: (marketId: number, outcomeIndex: number, shares: string, price: number) => Promise<void>;
+  onCancelOrder?: (orderId: number) => Promise<void>;
+  getPriceHistory?: (marketId: number) => Promise<PriceHistory>;
   isConnected: boolean;
   loading: boolean;
   usdcBalance: string;
+  userAddress?: string;
 }
 
-type Filter = 'all' | 'open' | 'resolved' | 'my-positions';
+type Filter = 'all' | 'open' | 'resolved' | 'my-positions' | 'multi-outcome';
 type SortBy = 'newest' | 'volume' | 'ending-soon';
 
 export function MarketList({
   markets,
+  userOrders = [],
+  isOwner = false,
   onBuy,
   onSell,
   onClaim,
+  onDelete,
+  onPlaceBuyOrder,
+  onPlaceSellOrder,
+  onCancelOrder,
+  getPriceHistory,
   isConnected,
   loading,
   usdcBalance,
+  userAddress = '',
 }: MarketListProps) {
   const [filter, setFilter] = useState<Filter>('all');
   const [sortBy, setSortBy] = useState<SortBy>('newest');
@@ -50,7 +50,8 @@ export function MarketList({
   let filteredMarkets = markets.filter((m) => {
     if (filter === 'open') return m.status === 0;
     if (filter === 'resolved') return m.status === 1;
-    if (filter === 'my-positions') return m.userYesShares > 0n || m.userNoShares > 0n;
+    if (filter === 'my-positions') return m.userShares?.some(s => s > 0n) || m.userYesShares > 0n || m.userNoShares > 0n;
+    if (filter === 'multi-outcome') return m.numOutcomes > 2;
     return true;
   });
 
@@ -73,7 +74,12 @@ export function MarketList({
     { key: 'open', label: '🟢 Open' },
     { key: 'resolved', label: '✅ Resolved' },
     { key: 'my-positions', label: '👤 My Positions' },
+    { key: 'multi-outcome', label: '🎯 Multi-Choice' },
   ];
+
+  const totalVolume = markets.reduce((acc, m) => acc + parseFloat(m.volume || '0'), 0);
+  const activeMarkets = markets.filter((m) => m.status === 0).length;
+  const multiOutcomeCount = markets.filter((m) => m.numOutcomes > 2).length;
 
   return (
     <div>
@@ -143,6 +149,8 @@ export function MarketList({
           <p className="text-gray-500 dark:text-gray-400">
             {filter === 'my-positions'
               ? "You haven't made any predictions yet"
+              : filter === 'multi-outcome'
+              ? "No multi-choice markets available"
               : 'Try adjusting your filters'}
           </p>
         </div>
@@ -152,11 +160,18 @@ export function MarketList({
             <MarketCard
               key={market.id}
               market={market}
+              userOrders={userOrders}
+              isOwner={isOwner}
               onBuy={onBuy}
               onSell={onSell}
               onClaim={onClaim}
+              onDelete={onDelete}
+              onPlaceBuyOrder={onPlaceBuyOrder}
+              onPlaceSellOrder={onPlaceSellOrder}
+              onCancelOrder={onCancelOrder}
               isConnected={isConnected}
               usdcBalance={usdcBalance}
+              userAddress={userAddress}
             />
           ))}
         </div>
@@ -169,14 +184,16 @@ export function MarketList({
           <div className="text-xs text-gray-500 dark:text-gray-400">Total Markets</div>
         </div>
         <div>
-          <div className="text-2xl font-bold text-gray-900 dark:text-white">
-            {markets.filter((m) => m.status === 0).length}
-          </div>
+          <div className="text-2xl font-bold text-gray-900 dark:text-white">{activeMarkets}</div>
           <div className="text-xs text-gray-500 dark:text-gray-400">Active</div>
         </div>
         <div>
+          <div className="text-2xl font-bold text-purple-600 dark:text-purple-400">{multiOutcomeCount}</div>
+          <div className="text-xs text-gray-500 dark:text-gray-400">Multi-Choice</div>
+        </div>
+        <div>
           <div className="text-2xl font-bold text-green-600 dark:text-green-400">
-            ${markets.reduce((acc, m) => acc + parseFloat(m.volume || '0'), 0).toFixed(0)}
+            ${totalVolume.toFixed(0)}
           </div>
           <div className="text-xs text-gray-500 dark:text-gray-400">Total Volume</div>
         </div>

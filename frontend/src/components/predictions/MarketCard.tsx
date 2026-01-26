@@ -1,29 +1,22 @@
 'use client';
 
-import { useState } from 'react';
-
-interface Market {
-  id: number;
-  question: string;
-  category: string;
-  endTime: number;
-  status: number;
-  yesPrice: number;
-  noPrice: number;
-  userYesShares: bigint;
-  userNoShares: bigint;
-  hasClaimed: boolean;
-  volume: string;
-  outcome: boolean;
-}
+import { useState, useEffect, useCallback } from 'react';
+import { Market, LimitOrder } from '@/hooks/usePredictionMarket';
 
 interface MarketCardProps {
   market: Market;
-  onBuy: (marketId: number, isYes: boolean, amount: string) => Promise<void>;
-  onSell: (marketId: number, isYes: boolean, shares: bigint) => Promise<void>;
+  userOrders?: LimitOrder[];
+  onBuy: (marketId: number, outcomeIndex: number | boolean, amount: string) => Promise<void>;
+  onSell: (marketId: number, outcomeIndex: number | boolean, shares: bigint | string) => Promise<void>;
   onClaim: (marketId: number) => Promise<void>;
+  onDelete?: (marketId: number) => Promise<void>;
+  onPlaceBuyOrder?: (marketId: number, outcomeIndex: number, shares: string, price: number) => Promise<void>;
+  onPlaceSellOrder?: (marketId: number, outcomeIndex: number, shares: string, price: number) => Promise<void>;
+  onCancelOrder?: (orderId: number) => Promise<void>;
   isConnected: boolean;
+  isOwner?: boolean;
   usdcBalance: string;
+  userAddress?: string;
 }
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -44,42 +37,188 @@ const CATEGORY_ICONS: Record<string, string> = {
   default: '🔮',
 };
 
-export function MarketCard({ market, onBuy, onSell, onClaim, isConnected, usdcBalance }: MarketCardProps) {
-  const [amount, setAmount] = useState('10');
-  const [selectedSide, setSelectedSide] = useState<'yes' | 'no' | null>(null);
+const OUTCOME_COLORS = [
+  'text-green-600 dark:text-green-400',
+  'text-red-600 dark:text-red-400',
+  'text-blue-600 dark:text-blue-400',
+  'text-purple-600 dark:text-purple-400',
+  'text-orange-600 dark:text-orange-400',
+  'text-pink-600 dark:text-pink-400',
+];
+
+const OUTCOME_BG_COLORS = [
+  'border-green-500 bg-green-500/10 dark:bg-green-500/20',
+  'border-red-500 bg-red-500/10 dark:bg-red-500/20',
+  'border-blue-500 bg-blue-500/10 dark:bg-blue-500/20',
+  'border-purple-500 bg-purple-500/10 dark:bg-purple-500/20',
+  'border-orange-500 bg-orange-500/10 dark:bg-orange-500/20',
+  'border-pink-500 bg-pink-500/10 dark:bg-pink-500/20',
+];
+
+const OUTCOME_BTN_COLORS = [
+  'from-green-500 to-green-600 hover:from-green-600 hover:to-green-700',
+  'from-red-500 to-red-600 hover:from-red-600 hover:to-red-700',
+  'from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700',
+  'from-purple-500 to-purple-600 hover:from-purple-600 hover:to-purple-700',
+  'from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700',
+  'from-pink-500 to-pink-600 hover:from-pink-600 hover:to-pink-700',
+];
+
+export function MarketCard({ 
+  market, 
+  userOrders = [],
+  onBuy, 
+  onSell, 
+  onClaim,
+  onDelete,
+  onPlaceBuyOrder,
+  onPlaceSellOrder,
+  onCancelOrder,
+  isConnected,
+  isOwner = false,
+  usdcBalance,
+}: MarketCardProps) {
+  const [selectedOutcome, setSelectedOutcome] = useState<number | null>(null);
+  const [tradeMode, setTradeMode] = useState<'buy' | 'sell'>('buy');
+  const [orderType, setOrderType] = useState<'market' | 'limit'>('market');
+  
+  const [buyAmount, setBuyAmount] = useState('10');
+  const [buyLimitPrice, setBuyLimitPrice] = useState('50');
+  const [buyLimitShares, setBuyLimitShares] = useState('10');
+  
+  const [sellShares, setSellShares] = useState('');
+  const [sellLimitPrice, setSellLimitPrice] = useState('50');
+  const [sellLimitShares, setSellLimitShares] = useState('');
+  
   const [loading, setLoading] = useState(false);
   const [showTradePanel, setShowTradePanel] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
 
   const isOpen = market.status === 0;
   const isResolved = market.status === 1;
+  const isCancelled = market.status === 2;
   const timeLeft = market.endTime * 1000 - Date.now();
   const daysLeft = Math.max(0, Math.floor(timeLeft / (1000 * 60 * 60 * 24)));
   const hoursLeft = Math.max(0, Math.floor((timeLeft % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60)));
 
   const categoryColor = CATEGORY_COLORS[market.category] || CATEGORY_COLORS.default;
   const categoryIcon = CATEGORY_ICONS[market.category] || CATEGORY_ICONS.default;
-  const hasPosition = market.userYesShares > 0n || market.userNoShares > 0n;
+  
+  const hasPosition = market.userShares 
+    ? market.userShares.some(s => s > 0n)
+    : (market.userYesShares > 0n || market.userNoShares > 0n);
 
-  const handleTrade = async () => {
-    if (!selectedSide) return;
+  const marketOrders = userOrders.filter(o => o.marketId === market.id);
+
+  const getOutcomeLabel = useCallback((index: number) => {
+    if (market.outcomeLabels && market.outcomeLabels[index]) {
+      return market.outcomeLabels[index];
+    }
+    return index === 0 ? 'Yes' : index === 1 ? 'No' : `Option ${index + 1}`;
+  }, [market.outcomeLabels]);
+
+  const getOutcomePrice = useCallback((index: number) => {
+    if (market.prices && market.prices[index] !== undefined) {
+      return (market.prices[index] / 100).toFixed(0);
+    }
+    return index === 0 ? market.yesPrice : market.noPrice;
+  }, [market.prices, market.yesPrice, market.noPrice]);
+
+  const getUserShares = useCallback((index: number) => {
+    if (market.userShares && market.userShares[index]) {
+      return market.userShares[index];
+    }
+    return index === 0 ? market.userYesShares : market.userNoShares;
+  }, [market.userShares, market.userYesShares, market.userNoShares]);
+
+  const formatShares = (shares: bigint) => {
+    return (Number(shares) / 1e18).toFixed(2);
+  };
+
+  useEffect(() => {
+    if (selectedOutcome !== null) {
+      const userHolding = getUserShares(selectedOutcome);
+      if (userHolding > 0n) {
+        const holdingStr = formatShares(userHolding);
+        setSellShares(holdingStr);
+        setSellLimitShares(holdingStr);
+      }
+    }
+  }, [selectedOutcome, getUserShares]);
+
+  const handleBuy = async () => {
+    if (selectedOutcome === null) return;
     setLoading(true);
     try {
-      await onBuy(market.id, selectedSide === 'yes', amount);
+      if (orderType === 'market') {
+        await onBuy(market.id, selectedOutcome, buyAmount);
+      } else if (onPlaceBuyOrder) {
+        await onPlaceBuyOrder(market.id, selectedOutcome, buyLimitShares, parseInt(buyLimitPrice));
+      }
       setShowTradePanel(false);
-      setSelectedSide(null);
+      setSelectedOutcome(null);
     } catch (error: any) {
+      console.error('Buy error:', error);
       alert(error.reason || error.message);
     } finally {
       setLoading(false);
     }
   };
 
-  const price = selectedSide === 'yes' ? market.yesPrice : market.noPrice;
-  const potentialShares = parseFloat(amount) / (price / 100);
+  const handleSell = async () => {
+    if (selectedOutcome === null) return;
+    setLoading(true);
+    try {
+      if (orderType === 'market') {
+        await onSell(market.id, selectedOutcome, sellShares);
+      } else if (onPlaceSellOrder) {
+        await onPlaceSellOrder(market.id, selectedOutcome, sellLimitShares, parseInt(sellLimitPrice));
+      }
+      setShowTradePanel(false);
+      setSelectedOutcome(null);
+    } catch (error: any) {
+      console.error('Sell error:', error);
+      alert(error.reason || error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCancelOrder = async (orderId: number) => {
+    if (!onCancelOrder) return;
+    setLoading(true);
+    try {
+      await onCancelOrder(orderId);
+    } catch (error: any) {
+      console.error('Cancel order error:', error);
+      alert(error.reason || error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!onDelete) return;
+    setLoading(true);
+    try {
+      await onDelete(market.id);
+      setDeleteConfirm(false);
+    } catch (error: any) {
+      console.error('Delete market error:', error);
+      alert(error.reason || error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const currentPrice = selectedOutcome !== null 
+    ? (market.prices?.[selectedOutcome] || (selectedOutcome === 0 ? market.yesPrice * 100 : market.noPrice * 100)) / 100
+    : 50;
+
+  const numOutcomes = market.numOutcomes || 2;
 
   return (
     <div className="bg-white dark:bg-[#12141c] rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden shadow-sm hover:shadow-lg dark:hover:border-gray-700 transition-all duration-200">
-      {/* Category Color Bar */}
       <div className={`h-1.5 bg-gradient-to-r ${categoryColor}`} />
 
       <div className="p-5">
@@ -90,9 +229,16 @@ export function MarketCard({ market, onBuy, onSell, onClaim, isConnected, usdcBa
               {categoryIcon}
             </div>
             <div>
-              <span className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">
-                {market.category}
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-500 dark:text-gray-400 uppercase tracking-wider font-medium">
+                  {market.category}
+                </span>
+                {numOutcomes > 2 && (
+                  <span className="text-xs bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400 px-1.5 py-0.5 rounded">
+                    {numOutcomes} options
+                  </span>
+                )}
+              </div>
               {isOpen && (
                 <div className="flex items-center gap-1.5 text-xs text-gray-600 dark:text-gray-300 mt-0.5">
                   <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
@@ -107,158 +253,336 @@ export function MarketCard({ market, onBuy, onSell, onClaim, isConnected, usdcBa
           </div>
         </div>
 
-        {/* Question */}
         <h3 className="text-lg font-semibold mb-5 leading-snug text-gray-900 dark:text-white">
           {market.question}
         </h3>
 
-        {/* Price Buttons */}
-        <div className="grid grid-cols-2 gap-3 mb-4">
-          <button
-            onClick={() => {
-              setSelectedSide('yes');
-              setShowTradePanel(true);
-            }}
-            disabled={!isOpen || !isConnected}
-            className={`relative p-4 rounded-xl border-2 transition-all duration-150 ${
-              selectedSide === 'yes' && showTradePanel
-                ? 'border-green-500 bg-green-500/10 dark:bg-green-500/20'
-                : 'border-gray-200 dark:border-gray-700 hover:border-green-400 dark:hover:border-green-500 bg-gray-50 dark:bg-gray-800/60'
-            } disabled:opacity-50 disabled:cursor-not-allowed`}
-          >
-            <div className="text-xs text-gray-500 dark:text-gray-400 mb-1 font-medium">Yes</div>
-            <div className="text-3xl font-bold text-green-600 dark:text-green-400">{market.yesPrice}¢</div>
-            {isResolved && market.outcome && (
-              <div className="absolute top-2 right-2 text-green-500 text-lg">✓</div>
-            )}
-          </button>
-
-          <button
-            onClick={() => {
-              setSelectedSide('no');
-              setShowTradePanel(true);
-            }}
-            disabled={!isOpen || !isConnected}
-            className={`relative p-4 rounded-xl border-2 transition-all duration-150 ${
-              selectedSide === 'no' && showTradePanel
-                ? 'border-red-500 bg-red-500/10 dark:bg-red-500/20'
-                : 'border-gray-200 dark:border-gray-700 hover:border-red-400 dark:hover:border-red-500 bg-gray-50 dark:bg-gray-800/60'
-            } disabled:opacity-50 disabled:cursor-not-allowed`}
-          >
-            <div className="text-xs text-gray-500 dark:text-gray-400 mb-1 font-medium">No</div>
-            <div className="text-3xl font-bold text-red-600 dark:text-red-400">{market.noPrice}¢</div>
-            {isResolved && !market.outcome && (
-              <div className="absolute top-2 right-2 text-green-500 text-lg">✓</div>
-            )}
-          </button>
+        {/* Outcome Buttons */}
+        <div className={`grid gap-3 mb-4 ${numOutcomes <= 2 ? 'grid-cols-2' : numOutcomes <= 4 ? 'grid-cols-2' : 'grid-cols-3'}`}>
+          {Array.from({ length: numOutcomes }).map((_, index) => {
+            const isWinner = isResolved && market.winnerIndex === index;
+            const isSelected = selectedOutcome === index && showTradePanel;
+            const colorIndex = index % OUTCOME_COLORS.length;
+            const userHolding = getUserShares(index);
+            
+            return (
+              <button
+                key={index}
+                onClick={() => {
+                  setSelectedOutcome(index);
+                  setShowTradePanel(true);
+                  setTradeMode(userHolding > 0n ? 'sell' : 'buy');
+                }}
+                disabled={!isOpen || !isConnected}
+                className={`relative p-4 rounded-xl border-2 transition-all duration-150 ${
+                  isSelected
+                    ? OUTCOME_BG_COLORS[colorIndex]
+                    : 'border-gray-200 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-500 bg-gray-50 dark:bg-gray-800/60'
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                <div className="text-xs text-gray-500 dark:text-gray-400 mb-1 font-medium truncate">
+                  {getOutcomeLabel(index)}
+                </div>
+                <div className={`text-2xl font-bold ${OUTCOME_COLORS[colorIndex]}`}>
+                  {getOutcomePrice(index)}%
+                </div>
+                {userHolding > 0n && (
+                  <div className="mt-1 text-xs text-blue-600 dark:text-blue-400">
+                    {formatShares(userHolding)} shares
+                  </div>
+                )}
+                {isWinner && (
+                  <div className="absolute top-2 right-2 text-green-500 text-lg">✓</div>
+                )}
+              </button>
+            );
+          })}
         </div>
 
         {/* User Position */}
         {hasPosition && (
           <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-xl mb-4 border border-blue-200 dark:border-blue-800">
-            <div className="flex justify-between items-center">
-              <div>
-                <div className="text-xs text-blue-600 dark:text-blue-400 mb-1 font-medium">Your Position</div>
-                <div className="flex gap-3 text-sm">
-                  {market.userYesShares > 0n && (
-                    <span className="text-green-600 dark:text-green-400 font-semibold">
-                      {(Number(market.userYesShares) / 1e18).toFixed(2)} Yes
+            <div className="text-xs text-blue-600 dark:text-blue-400 mb-1 font-medium">Your Position</div>
+            <div className="flex flex-wrap gap-2 text-sm">
+              {Array.from({ length: numOutcomes }).map((_, index) => {
+                const shares = getUserShares(index);
+                if (shares <= 0n) return null;
+                return (
+                  <span key={index} className={`font-semibold ${OUTCOME_COLORS[index % OUTCOME_COLORS.length]}`}>
+                    {formatShares(shares)} {getOutcomeLabel(index)}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* User Orders */}
+        {marketOrders.length > 0 && (
+          <div className="p-3 bg-yellow-50 dark:bg-yellow-900/20 rounded-xl mb-4 border border-yellow-200 dark:border-yellow-800">
+            <div className="text-xs text-yellow-600 dark:text-yellow-400 mb-2 font-medium">
+              Your Open Orders ({marketOrders.length})
+            </div>
+            <div className="space-y-2">
+              {marketOrders.map(order => (
+                <div key={order.id} className="flex items-center justify-between text-sm bg-white dark:bg-gray-800 rounded-lg p-2">
+                  <div>
+                    <span className={order.isBuy ? 'text-green-600' : 'text-red-600'}>
+                      {order.isBuy ? 'BUY' : 'SELL'}
                     </span>
-                  )}
-                  {market.userNoShares > 0n && (
-                    <span className="text-red-600 dark:text-red-400 font-semibold">
-                      {(Number(market.userNoShares) / 1e18).toFixed(2)} No
+                    {' '}
+                    <span className="text-gray-700 dark:text-gray-300">
+                      {formatShares(order.shares)} {getOutcomeLabel(order.outcomeIndex)}
                     </span>
-                  )}
+                    {' @ '}
+                    <span className="font-medium">{(order.price / 100).toFixed(0)}%</span>
+                  </div>
+                  <button
+                    onClick={() => handleCancelOrder(order.id)}
+                    disabled={loading}
+                    className="text-xs px-2 py-1 bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 rounded hover:bg-red-200 dark:hover:bg-red-900/50 transition disabled:opacity-50"
+                  >
+                    Cancel
+                  </button>
                 </div>
-              </div>
+              ))}
             </div>
           </div>
         )}
 
         {/* Trade Panel */}
-        {showTradePanel && isOpen && (
+        {showTradePanel && isOpen && selectedOutcome !== null && (
           <div className="border-t border-gray-200 dark:border-gray-700 pt-4 mt-4 space-y-4">
             <div className="flex items-center justify-between">
               <span className="text-sm text-gray-600 dark:text-gray-300 font-medium">
-                Buy{' '}
-                <span className={selectedSide === 'yes' ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'}>
-                  {selectedSide?.toUpperCase()}
+                Trade{' '}
+                <span className={OUTCOME_COLORS[selectedOutcome % OUTCOME_COLORS.length]}>
+                  {getOutcomeLabel(selectedOutcome)}
                 </span>
               </span>
               <button
                 onClick={() => {
                   setShowTradePanel(false);
-                  setSelectedSide(null);
+                  setSelectedOutcome(null);
                 }}
-                className="w-8 h-8 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 transition flex items-center justify-center"
+                className="w-8 h-8 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-700 transition flex items-center justify-center"
               >
                 ✕
               </button>
             </div>
 
-            {/* Amount Input */}
-            <div className="relative">
-              <input
-                type="number"
-                step="1"
-                min="1"
-                value={amount}
-                onChange={(e) => setAmount(e.target.value)}
-                className="w-full px-4 py-3 bg-gray-100 dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 focus:border-blue-500 dark:focus:border-blue-400 outline-none text-lg pr-16 text-gray-900 dark:text-white font-medium"
-              />
-              <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 dark:text-gray-400 font-medium">
-                USDC
-              </span>
-            </div>
-
-            {/* Quick Amount Buttons */}
             <div className="flex gap-2">
-              {['10', '25', '50', '100'].map((val) => (
-                <button
-                  key={val}
-                  onClick={() => setAmount(val)}
-                  className={`flex-1 py-2.5 rounded-lg text-sm font-semibold transition-colors ${
-                    amount === val
-                      ? 'bg-blue-600 text-white shadow-md'
-                      : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 border border-gray-200 dark:border-gray-700'
-                  }`}
-                >
-                  ${val}
-                </button>
-              ))}
+              <button
+                onClick={() => setTradeMode('buy')}
+                className={`flex-1 py-2 rounded-lg text-sm font-medium transition ${
+                  tradeMode === 'buy' ? 'bg-green-600 text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400'
+                }`}
+              >
+                Buy
+              </button>
+              <button
+                onClick={() => setTradeMode('sell')}
+                disabled={getUserShares(selectedOutcome) <= 0n}
+                className={`flex-1 py-2 rounded-lg text-sm font-medium transition ${
+                  tradeMode === 'sell' ? 'bg-red-600 text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400'
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                Sell
+              </button>
             </div>
 
-            {/* Balance Display */}
-            <div className="text-xs text-gray-500 dark:text-gray-400">
-              Balance: <span className="font-semibold text-gray-700 dark:text-gray-200">${parseFloat(usdcBalance).toFixed(2)} USDC</span>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setOrderType('market')}
+                className={`flex-1 py-2 rounded-lg text-sm font-medium transition ${
+                  orderType === 'market' ? 'bg-blue-600 text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400'
+                }`}
+              >
+                Market
+              </button>
+              <button
+                onClick={() => setOrderType('limit')}
+                disabled={tradeMode === 'buy' ? !onPlaceBuyOrder : !onPlaceSellOrder}
+                className={`flex-1 py-2 rounded-lg text-sm font-medium transition ${
+                  orderType === 'limit' ? 'bg-blue-600 text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400'
+                } disabled:opacity-50 disabled:cursor-not-allowed`}
+              >
+                Limit
+              </button>
             </div>
 
-            {/* Trade Info */}
-            <div className="p-4 bg-gray-50 dark:bg-gray-800/60 rounded-xl space-y-2 border border-gray-200 dark:border-gray-700">
-              <div className="flex justify-between text-sm">
-                <span className="text-gray-500 dark:text-gray-400">Avg price</span>
-                <span className="text-gray-900 dark:text-white font-medium">{price}¢</span>
-              </div>
-              <div className="flex justify-between text-sm">
-                <span className="text-gray-500 dark:text-gray-400">Est. shares</span>
-                <span className="text-gray-900 dark:text-white font-medium">{potentialShares.toFixed(2)}</span>
-              </div>
-              <div className="flex justify-between text-sm pt-2 border-t border-gray-200 dark:border-gray-700">
-                <span className="text-gray-500 dark:text-gray-400 font-medium">Potential return</span>
-                <span className="text-green-600 dark:text-green-400 font-bold">
-                  ${potentialShares.toFixed(2)} (if wins)
-                </span>
-              </div>
+            {/* BUY MODE */}
+            {tradeMode === 'buy' && (
+              <>
+                {orderType === 'market' ? (
+                  <>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        step="1"
+                        min="1"
+                        value={buyAmount}
+                        onChange={(e) => setBuyAmount(e.target.value)}
+                        className="w-full px-4 py-3 bg-gray-100 dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 text-lg pr-16 text-gray-900 dark:text-white font-medium focus:outline-none focus:ring-2 focus:ring-green-500"
+                        placeholder="Amount"
+                      />
+                      <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 font-medium">USDC</span>
+                    </div>
+                    <div className="flex gap-2">
+                      {['10', '25', '50', '100'].map((val) => (
+                        <button
+                          key={val}
+                          onClick={() => setBuyAmount(val)}
+                          className={`flex-1 py-2 rounded-lg text-sm font-semibold transition ${
+                            buyAmount === val ? 'bg-green-600 text-white' : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
+                          }`}
+                        >
+                          ${val}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="p-3 bg-gray-50 dark:bg-gray-800/60 rounded-xl border border-gray-200 dark:border-gray-700 text-sm">
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Est. shares</span>
+                        <span className="font-medium">{(parseFloat(buyAmount || '0') / (currentPrice / 100)).toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between mt-1">
+                        <span className="text-gray-500">Potential return</span>
+                        <span className="text-green-600 font-medium">${(parseFloat(buyAmount || '0') / (currentPrice / 100)).toFixed(2)}</span>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs text-gray-500 mb-1">Price (%)</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="99"
+                          value={buyLimitPrice}
+                          onChange={(e) => setBuyLimitPrice(e.target.value)}
+                          className="w-full px-3 py-2 bg-gray-100 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-green-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-500 mb-1">Shares</label>
+                        <input
+                          type="number"
+                          min="1"
+                          value={buyLimitShares}
+                          onChange={(e) => setBuyLimitShares(e.target.value)}
+                          className="w-full px-3 py-2 bg-gray-100 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-green-500"
+                        />
+                      </div>
+                    </div>
+                    <div className="p-3 bg-gray-50 dark:bg-gray-800/60 rounded-xl border border-gray-200 dark:border-gray-700 text-sm">
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">USDC to lock</span>
+                        <span className="font-medium text-blue-600">
+                          ${((parseFloat(buyLimitShares) || 0) * (parseFloat(buyLimitPrice) || 0) / 100).toFixed(2)}
+                        </span>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+
+            {/* SELL MODE */}
+            {tradeMode === 'sell' && (
+              <>
+                <div className="text-xs text-gray-500 mb-1">
+                  Available: <span className="font-semibold">{formatShares(getUserShares(selectedOutcome))} shares</span>
+                </div>
+                {orderType === 'market' ? (
+                  <>
+                    <div className="relative">
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0.01"
+                        max={formatShares(getUserShares(selectedOutcome))}
+                        value={sellShares}
+                        onChange={(e) => setSellShares(e.target.value)}
+                        className="w-full px-4 py-3 bg-gray-100 dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 text-lg pr-20 text-gray-900 dark:text-white font-medium focus:outline-none focus:ring-2 focus:ring-red-500"
+                        placeholder="Shares"
+                      />
+                      <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 font-medium">Shares</span>
+                    </div>
+                    <div className="flex gap-2">
+                      {['25', '50', '75', '100'].map((pct) => (
+                        <button
+                          key={pct}
+                          onClick={() => {
+                            const max = Number(getUserShares(selectedOutcome)) / 1e18;
+                            setSellShares((max * parseInt(pct) / 100).toFixed(2));
+                          }}
+                          className="flex-1 py-2 rounded-lg text-sm font-semibold bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition"
+                        >
+                          {pct}%
+                        </button>
+                      ))}
+                    </div>
+                    <div className="p-3 bg-gray-50 dark:bg-gray-800/60 rounded-xl border border-gray-200 dark:border-gray-700 text-sm">
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Est. receive</span>
+                        <span className="font-medium text-green-600">
+                          ~${((parseFloat(sellShares) || 0) * currentPrice / 100).toFixed(2)} USDC
+                        </span>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs text-gray-500 mb-1">Price (%)</label>
+                        <input
+                          type="number"
+                          min="1"
+                          max="99"
+                          value={sellLimitPrice}
+                          onChange={(e) => setSellLimitPrice(e.target.value)}
+                          className="w-full px-3 py-2 bg-gray-100 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-red-500"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs text-gray-500 mb-1">Shares</label>
+                        <input
+                          type="number"
+                          min="0.01"
+                          max={formatShares(getUserShares(selectedOutcome))}
+                          value={sellLimitShares}
+                          onChange={(e) => setSellLimitShares(e.target.value)}
+                          className="w-full px-3 py-2 bg-gray-100 dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-red-500"
+                        />
+                      </div>
+                    </div>
+                    <div className="p-3 bg-gray-50 dark:bg-gray-800/60 rounded-xl border border-gray-200 dark:border-gray-700 text-sm">
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Receive if filled</span>
+                        <span className="font-medium text-green-600">
+                          ${((parseFloat(sellLimitShares) || 0) * (parseFloat(sellLimitPrice) || 0) / 100).toFixed(2)} USDC
+                        </span>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </>
+            )}
+
+            <div className="text-xs text-gray-500">
+              Balance: <span className="font-semibold">${parseFloat(usdcBalance).toFixed(2)} USDC</span>
             </div>
 
-            {/* Buy Button */}
             <button
-              onClick={handleTrade}
-              disabled={loading || !amount || parseFloat(amount) <= 0}
+              onClick={tradeMode === 'buy' ? handleBuy : handleSell}
+              disabled={loading}
               className={`w-full py-4 rounded-xl font-bold text-lg transition-all shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed text-white ${
-                selectedSide === 'yes'
-                  ? 'bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700'
+                tradeMode === 'buy'
+                  ? `bg-gradient-to-r ${OUTCOME_BTN_COLORS[selectedOutcome % OUTCOME_BTN_COLORS.length]}`
                   : 'bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700'
               }`}
             >
@@ -270,8 +594,10 @@ export function MarketCard({ market, onBuy, onSell, onClaim, isConnected, usdcBa
                   </svg>
                   Processing...
                 </span>
+              ) : tradeMode === 'buy' ? (
+                orderType === 'market' ? `Buy ${getOutcomeLabel(selectedOutcome)}` : 'Place Buy Order'
               ) : (
-                `Buy ${selectedSide?.toUpperCase()}`
+                orderType === 'market' ? `Sell ${getOutcomeLabel(selectedOutcome)}` : 'Place Sell Order'
               )}
             </button>
           </div>
@@ -292,11 +618,48 @@ export function MarketCard({ market, onBuy, onSell, onClaim, isConnected, usdcBa
           <div
             className={`text-center py-3 rounded-xl text-sm font-semibold mt-4 ${
               isResolved
-                ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 border border-green-200 dark:border-green-800'
-                : 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800'
+                ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400'
+                : 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400'
             }`}
           >
-            {isResolved ? `✅ Resolved: ${market.outcome ? 'YES' : 'NO'} won` : '❌ Market Cancelled'}
+            {isResolved 
+              ? `✅ Resolved: ${getOutcomeLabel(market.winnerIndex)} won` 
+              : '❌ Market Cancelled'}
+          </div>
+        )}
+
+        {/* Admin Delete */}
+        {isOwner && (isOpen || isCancelled) && onDelete && (
+          <div className="mt-4">
+            {!deleteConfirm ? (
+              <button
+                onClick={() => setDeleteConfirm(true)}
+                className="w-full py-2 bg-red-100 dark:bg-red-900/30 text-red-600 dark:text-red-400 rounded-lg text-sm font-medium hover:bg-red-200 dark:hover:bg-red-900/50 transition flex items-center justify-center gap-2"
+              >
+                🗑️ Delete Market
+              </button>
+            ) : (
+              <div className="p-3 bg-red-50 dark:bg-red-900/20 rounded-lg border border-red-200 dark:border-red-800">
+                <p className="text-sm text-red-700 dark:text-red-400 mb-3">
+                  Are you sure? This will refund all users and cancel all orders.
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleDelete}
+                    disabled={loading}
+                    className="flex-1 py-2 bg-red-600 text-white rounded-lg text-sm font-medium hover:bg-red-700 transition disabled:opacity-50"
+                  >
+                    {loading ? 'Deleting...' : 'Yes, Delete'}
+                  </button>
+                  <button
+                    onClick={() => setDeleteConfirm(false)}
+                    className="flex-1 py-2 bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded-lg text-sm font-medium hover:bg-gray-300 dark:hover:bg-gray-600 transition"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         )}
       </div>
