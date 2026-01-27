@@ -58,6 +58,27 @@ export interface PortfolioStats {
   }>;
 }
 
+// ✅ 安全获取显示名称的辅助函数
+function getSafeDisplayName(
+  twitterDisplayName?: string,
+  handle?: string
+): string {
+  const name = twitterDisplayName?.trim();
+  // 过滤无效的名字
+  const invalidNames = ['unknown', '', 'null', 'undefined', '(null)'];
+  
+  if (name && !invalidNames.includes(name.toLowerCase())) {
+    return name;
+  }
+  
+  // 如果 handle 存在，返回带 @ 的格式或直接返回
+  if (handle) {
+    return handle.startsWith('@') ? handle : `@${handle}`;
+  }
+  
+  return 'Anonymous';
+}
+
 // 从 localStorage 读取 creators
 function loadCreatorsFromStorage(): Creator[] {
   if (typeof window === 'undefined') return [];
@@ -150,6 +171,8 @@ export function useCreatorMarket(walletAddress: string, isConnected: boolean) {
       // 计算每个 creator 的 attention score 和 24h 变化
       const enhanced = stored.map(c => ({
         ...c,
+        // ✅ 修复已存储的 Unknown 名称
+        displayName: getSafeDisplayName(c.displayName, c.handle),
         attentionScore: c.attentionScore || calculateAttentionScore(c),
         priceChange24h: c.priceChange24h || (Math.random() - 0.5) * 20, // 模拟
         holders: c.holders || Math.max(1, Math.floor(c.totalSupply * 0.7)),
@@ -157,6 +180,9 @@ export function useCreatorMarket(walletAddress: string, isConnected: boolean) {
       }));
       
       setCreators(enhanced);
+      // ✅ 保存修复后的数据
+      saveCreatorsToStorage(enhanced);
+      
       setActivities(loadActivitiesFromStorage());
       setPriceHistory(loadPriceHistoryFromStorage());
     } finally {
@@ -217,9 +243,13 @@ export function useCreatorMarket(walletAddress: string, isConnected: boolean) {
       await new Promise((r) => setTimeout(r, 1500));
 
       const initialPrice = 1.0;
+      
+      // ✅ 使用安全的显示名称获取函数
+      const safeDisplayName = getSafeDisplayName(twitterData?.displayName, handle);
+      
       const newCreator: Creator = {
         handle: handle,
-        displayName: twitterData?.displayName || handle,
+        displayName: safeDisplayName,  // ✅ 使用安全的名称
         avatar: twitterData?.avatar || '',
         totalSupply: 1,
         poolBalance: 0,
@@ -257,7 +287,7 @@ export function useCreatorMarket(walletAddress: string, isConnected: boolean) {
         type: 'launch',
         user: walletAddress,
         creatorHandle: handle,
-        creatorName: twitterData?.displayName || handle,
+        creatorName: safeDisplayName,  // ✅ 使用安全的名称
         amount: 0,
         price: initialPrice,
         totalValue: 0,
@@ -296,12 +326,15 @@ export function useCreatorMarket(walletAddress: string, isConnected: boolean) {
             const newUserShares = c.userShares + amount;
             const newAvgBuyPrice = newUserShares > 0 ? newTotalCost / newUserShares : newPrice;
 
+            // ✅ 使用安全的名称
+            const safeName = getSafeDisplayName(c.displayName, c.handle);
+
             // 准备活动数据
             activityData = {
               type: 'buy',
               user: walletAddress,
               creatorHandle: handle,
-              creatorName: c.displayName || handle,
+              creatorName: safeName,
               amount,
               price: c.price,
               totalValue: cost,
@@ -363,11 +396,14 @@ export function useCreatorMarket(walletAddress: string, isConnected: boolean) {
             const newPrice = Math.max(1, c.price - amount * 0.1);
             const newUserShares = c.userShares - amount;
 
+            // ✅ 使用安全的名称
+            const safeName = getSafeDisplayName(c.displayName, c.handle);
+
             activityData = {
               type: 'sell',
               user: walletAddress,
               creatorHandle: handle,
-              creatorName: c.displayName || handle,
+              creatorName: safeName,
               amount,
               price: c.price,
               totalValue: payout,
