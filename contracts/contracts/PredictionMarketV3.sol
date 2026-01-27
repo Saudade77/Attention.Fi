@@ -204,8 +204,8 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
         }
         
         for (uint8 i = 0; i < m.numOutcomes; i++) {
-            uint256 otherShares = totalShares - outcomeShares[marketId][i];
-            prices[i] = (otherShares * BASIS_POINTS) / totalShares;
+            // ✅ 修复：使用当前选项的份额占比作为价格
+            prices[i] = (outcomeShares[marketId][i] * BASIS_POINTS) / totalShares;
             if (prices[i] < 100) prices[i] = 100;
             if (prices[i] > 9900) prices[i] = 9900;
         }
