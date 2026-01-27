@@ -1,15 +1,21 @@
 'use client';
 
-// ✅ 第一行必须导入样式
 import '@rainbow-me/rainbowkit/styles.css';
 
-import { RainbowKitProvider, getDefaultConfig, darkTheme, lightTheme } from '@rainbow-me/rainbowkit';
+import { 
+  RainbowKitProvider, 
+  getDefaultConfig, 
+  darkTheme, 
+  lightTheme,
+  Theme,
+} from '@rainbow-me/rainbowkit';
 import { WagmiProvider } from 'wagmi';
 import { sepolia } from 'wagmi/chains';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState, useEffect } from 'react';
+import { useTheme } from 'next-themes';
 
-// ✅ config 放在组件外部，只创建一次
+// config 放在组件外部，只创建一次
 const config = getDefaultConfig({
   appName: 'PredictX',
   projectId: process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || '',
@@ -17,11 +23,79 @@ const config = getDefaultConfig({
   ssr: true,
 });
 
-export function Web3Provider({ children }: { children: React.ReactNode }) {
-  const [queryClient] = useState(() => new QueryClient());
+// 自定义 RainbowKit 主题
+const customDarkTheme: Theme = {
+  ...darkTheme({
+    accentColor: '#3b82f6',
+    accentColorForeground: 'white',
+    borderRadius: 'medium',
+    fontStack: 'system',
+    overlayBlur: 'small',
+  }),
+  colors: {
+    ...darkTheme().colors,
+    modalBackground: '#12141c',
+    modalBorder: '#1f2937',
+    profileForeground: '#12141c',
+    closeButton: '#9ca3af',
+    closeButtonBackground: '#1f2937',
+  },
+  shadows: {
+    ...darkTheme().shadows,
+    dialog: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+  },
+};
+
+const customLightTheme: Theme = {
+  ...lightTheme({
+    accentColor: '#3b82f6',
+    accentColorForeground: 'white',
+    borderRadius: 'medium',
+    fontStack: 'system',
+    overlayBlur: 'small',
+  }),
+  colors: {
+    ...lightTheme().colors,
+    modalBackground: '#ffffff',
+    modalBorder: '#e5e7eb',
+  },
+};
+
+function RainbowKitWrapper({ children }: { children: React.ReactNode }) {
+  const { resolvedTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
 
-  // ✅ 防止 SSR hydration 问题
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  // 根据当前主题选择 RainbowKit 主题
+  const rainbowTheme = mounted && resolvedTheme === 'light' 
+    ? customLightTheme 
+    : customDarkTheme;
+
+  return (
+    <RainbowKitProvider 
+      theme={rainbowTheme}
+      modalSize="compact"
+      showRecentTransactions={true}
+    >
+      {children}
+    </RainbowKitProvider>
+  );
+}
+
+export function Web3Provider({ children }: { children: React.ReactNode }) {
+  const [queryClient] = useState(() => new QueryClient({
+    defaultOptions: {
+      queries: {
+        staleTime: 1000 * 60, // 1 minute
+        refetchOnWindowFocus: false,
+      },
+    },
+  }));
+  const [mounted, setMounted] = useState(false);
+
   useEffect(() => {
     setMounted(true);
   }, []);
@@ -29,14 +103,12 @@ export function Web3Provider({ children }: { children: React.ReactNode }) {
   return (
     <WagmiProvider config={config}>
       <QueryClientProvider client={queryClient}>
-        <RainbowKitProvider
-          theme={darkTheme({
-            accentColor: '#3b82f6',
-            borderRadius: 'medium',
-          })}
-        >
-          {mounted ? children : null}
-        </RainbowKitProvider>
+        <RainbowKitWrapper>
+          {mounted ? children : (
+            // 加载占位符，防止闪烁
+            <div className="min-h-screen bg-gray-50 dark:bg-[#05060b]" />
+          )}
+        </RainbowKitWrapper>
       </QueryClientProvider>
     </WagmiProvider>
   );

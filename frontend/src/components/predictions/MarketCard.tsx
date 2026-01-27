@@ -1,7 +1,9 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Market, LimitOrder } from '@/hooks/usePredictionMarket';
+// ✅ 引入概率图表组件
+import { MiniProbabilityChart, generateMockProbabilityHistory } from '@/components/charts/ProbabilityChart';
 
 interface MarketCardProps {
   market: Market;
@@ -93,6 +95,7 @@ export function MarketCard({
   const [loading, setLoading] = useState(false);
   const [showTradePanel, setShowTradePanel] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const [showChart, setShowChart] = useState(false);
 
   const isOpen = market.status === 0;
   const isResolved = market.status === 1;
@@ -109,6 +112,18 @@ export function MarketCard({
     : (market.userYesShares > 0n || market.userNoShares > 0n);
 
   const marketOrders = userOrders.filter(o => o.marketId === market.id);
+
+  // ✅ 生成模拟的概率历史数据（仅用于二元市场）
+  const probabilityHistory = useMemo(() => {
+    const numOutcomes = market.numOutcomes || 2;
+    if (numOutcomes !== 2) return [];
+    
+    const currentYesPrice = market.prices?.[0] 
+      ? market.prices[0] / 100 
+      : (typeof market.yesPrice === 'number' ? market.yesPrice : 50);
+    
+    return generateMockProbabilityHistory(currentYesPrice, 12).map(d => d.yes);
+  }, [market.prices, market.yesPrice, market.numOutcomes]);
 
   const getOutcomeLabel = useCallback((index: number) => {
     if (market.outcomeLabels && market.outcomeLabels[index]) {
@@ -253,9 +268,44 @@ export function MarketCard({
           </div>
         </div>
 
-        <h3 className="text-lg font-semibold mb-5 leading-snug text-gray-900 dark:text-white">
+        <h3 className="text-lg font-semibold mb-3 leading-snug text-gray-900 dark:text-white">
           {market.question}
         </h3>
+
+        {/* ✅ 新增：概率走势图（仅二元市场显示） */}
+        {numOutcomes === 2 && probabilityHistory.length > 1 && (
+          <div className="mb-4">
+            <div 
+              className="flex items-center justify-between cursor-pointer group"
+              onClick={() => setShowChart(!showChart)}
+            >
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-500 dark:text-gray-400">Probability Trend</span>
+                <span className="text-xs text-gray-400 group-hover:text-gray-600 dark:group-hover:text-gray-300 transition">
+                  {showChart ? '▼' : '▶'}
+                </span>
+              </div>
+              <div className="flex items-center gap-3 text-xs">
+                <span className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-green-500"></span>
+                  <span className="text-gray-500">Yes</span>
+                </span>
+                <span className="flex items-center gap-1">
+                  <span className="w-2 h-2 rounded-full bg-red-500"></span>
+                  <span className="text-gray-500">No</span>
+                </span>
+              </div>
+            </div>
+            
+            {/* 默认显示迷你图，点击展开完整图 */}
+            <div className={`mt-2 transition-all duration-300 ${showChart ? 'h-28' : 'h-10'}`}>
+              <MiniProbabilityChart 
+                data={probabilityHistory} 
+                height={showChart ? 100 : 36} 
+              />
+            </div>
+          </div>
+        )}
 
         {/* Outcome Buttons */}
         <div className={`grid gap-3 mb-4 ${numOutcomes <= 2 ? 'grid-cols-2' : numOutcomes <= 4 ? 'grid-cols-2' : 'grid-cols-3'}`}>

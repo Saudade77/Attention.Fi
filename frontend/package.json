@@ -12,6 +12,7 @@
     "@rainbow-me/rainbowkit": "^2.2.10",
     "@tanstack/react-query": "^5.90.20",
     "ethers": "^6.16.0",
+    "framer-motion": "^12.29.2",
     "https-proxy-agent": "^7.0.6",
     "next": "14.2.35",
     "next-themes": "^0.4.6",
@@ -19,6 +20,7 @@
     "react": "^18",
     "react-dom": "^18",
     "react-hot-toast": "^2.6.0",
+    "recharts": "^3.7.0",
     "twitter-api-v2": "^1.29.0",
     "viem": "^2.45.0",
     "wagmi": "^2.19.5"

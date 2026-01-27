@@ -1,14 +1,19 @@
+import { ThemeProvider } from '@/providers/ThemeProvider';
 import { Web3Provider } from '@/providers/Web3Provider';
 import './globals.css';
-// ❌ 不要在这里重复导入 rainbowkit/styles.css
+
+export const metadata = {
+  title: 'Attention.Fi',
+  description: 'Creator Market Platform',
+};
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
-      <body>
-        <Web3Provider>
-          {children}
-        </Web3Provider>
+    <html lang="en" suppressHydrationWarning>
+      <body className="min-h-screen bg-white dark:bg-[#0a0b0f] text-gray-900 dark:text-white transition-colors">
+        <ThemeProvider>
+          <Web3Provider>{children}</Web3Provider>
+        </ThemeProvider>
       </body>
     </html>
   );

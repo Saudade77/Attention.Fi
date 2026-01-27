@@ -1,6 +1,8 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { MiniPriceChart, generatePriceHistory } from '@/components/charts';
 
 interface Creator {
   handle: string;
@@ -8,12 +10,12 @@ interface Creator {
   poolBalance: number;
   price: number;
   userShares: number;
-  // Twitter 数据（从 API 获取）
   displayName?: string;
   avatar?: string;
   followers?: number;
   attentionScore?: number;
   priceChange24h?: number;
+  priceHistory?: number[]; // 新增：价格历史数组
 }
 
 interface CreatorCardProps {
@@ -24,12 +26,32 @@ interface CreatorCardProps {
   loading: boolean;
 }
 
+// Attention Score 等级配置
+const getScoreLevel = (score: number) => {
+  if (score >= 700) return { label: 'Elite', color: 'from-yellow-400 to-orange-500', icon: '👑', bg: 'bg-yellow-500' };
+  if (score >= 500) return { label: 'Hot', color: 'from-red-400 to-pink-500', icon: '🔥', bg: 'bg-red-500' };
+  if (score >= 300) return { label: 'Rising', color: 'from-blue-400 to-purple-500', icon: '📈', bg: 'bg-blue-500' };
+  return { label: 'New', color: 'from-gray-400 to-gray-500', icon: '🌱', bg: 'bg-gray-500' };
+};
+
 export function CreatorCard({ creator, onBuy, onSell, isConnected, loading }: CreatorCardProps) {
   const [buyAmount, setBuyAmount] = useState('1');
   const [sellAmount, setSellAmount] = useState('1');
   const [activeTab, setActiveTab] = useState<'buy' | 'sell'>('buy');
   const [isProcessing, setIsProcessing] = useState(false);
   const [twitterData, setTwitterData] = useState<any>(null);
+  const [showTradePanel, setShowTradePanel] = useState(false);
+  const [priceFlash, setPriceFlash] = useState<'up' | 'down' | null>(null);
+  const [prevPrice, setPrevPrice] = useState(creator.price);
+
+  // 生成或使用价格历史数据
+  const priceHistory = useMemo(() => {
+    if (creator.priceHistory && creator.priceHistory.length > 0) {
+      return creator.priceHistory;
+    }
+    // 如果没有真实数据，生成模拟数据
+    return generatePriceHistory(creator.price, 7);
+  }, [creator.priceHistory, creator.price]);
 
   // 获取 Twitter 数据
   useEffect(() => {
@@ -47,14 +69,27 @@ export function CreatorCard({ creator, onBuy, onSell, isConnected, loading }: Cr
     fetchTwitterData();
   }, [creator.handle]);
 
+  // 监听价格变化
+  useEffect(() => {
+    if (creator.price !== prevPrice) {
+      setPriceFlash(creator.price > prevPrice ? 'up' : 'down');
+      setPrevPrice(creator.price);
+      const timer = setTimeout(() => setPriceFlash(null), 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [creator.price, prevPrice]);
+
   const handleBuy = async () => {
     const amount = parseInt(buyAmount);
     if (!amount || amount <= 0) return;
 
     setIsProcessing(true);
     try {
-      await onBuy(creator.handle, amount);
-      setBuyAmount('1');
+      const success = await onBuy(creator.handle, amount);
+      if (success) {
+        setBuyAmount('1');
+        setShowTradePanel(false);
+      }
     } catch (error: any) {
       alert(error.message || 'Transaction failed');
     } finally {
@@ -68,8 +103,11 @@ export function CreatorCard({ creator, onBuy, onSell, isConnected, loading }: Cr
 
     setIsProcessing(true);
     try {
-      await onSell(creator.handle, amount);
-      setSellAmount('1');
+      const success = await onSell(creator.handle, amount);
+      if (success) {
+        setSellAmount('1');
+        setShowTradePanel(false);
+      }
     } catch (error: any) {
       alert(error.message || 'Transaction failed');
     } finally {
@@ -77,22 +115,26 @@ export function CreatorCard({ creator, onBuy, onSell, isConnected, loading }: Cr
     }
   };
 
-  const estimatedCost = parseFloat(buyAmount || '0') * creator.price;
+  const estimatedCost = parseFloat(buyAmount || '0') * creator.price * (1 + parseFloat(buyAmount || '0') * 0.02);
   const estimatedReturn = parseFloat(sellAmount || '0') * creator.price * 0.95;
   const attentionScore = twitterData?.attentionScore || creator.attentionScore || 0;
-  const scoreColor = attentionScore >= 700 ? 'text-green-500' : attentionScore >= 400 ? 'text-yellow-500' : 'text-red-500';
+  const scoreLevel = getScoreLevel(attentionScore);
+  const priceChange = creator.priceChange24h || (twitterData?.priceChange24h) || 0;
 
   return (
-    <div className="bg-white dark:bg-[#12141c] rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden shadow-sm hover:shadow-xl transition-all duration-300">
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="bg-white dark:bg-[#12141c] rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden shadow-sm hover:shadow-xl transition-all duration-300"
+    >
       {/* Attention Score Bar */}
-      <div className="h-1 bg-gray-200 dark:bg-gray-800">
-        <div 
-          className={`h-full bg-gradient-to-r ${
-            attentionScore >= 700 ? 'from-green-500 to-emerald-500' :
-            attentionScore >= 400 ? 'from-yellow-500 to-orange-500' :
-            'from-red-500 to-rose-500'
-          }`}
-          style={{ width: `${Math.min(attentionScore / 10, 100)}%` }}
+      <div className="h-1.5 bg-gray-200 dark:bg-gray-800">
+        <motion.div 
+          className={`h-full bg-gradient-to-r ${scoreLevel.color}`}
+          initial={{ width: 0 }}
+          animate={{ width: `${Math.min(attentionScore / 10, 100)}%` }}
+          transition={{ duration: 0.5, ease: 'easeOut' }}
         />
       </div>
 
@@ -101,49 +143,91 @@ export function CreatorCard({ creator, onBuy, onSell, isConnected, loading }: Cr
         <div className="flex items-center gap-4">
           {/* Avatar */}
           <div className="relative">
-            {twitterData?.avatar ? (
+            {twitterData?.avatar || creator.avatar ? (
               <img
-                src={twitterData.avatar}
+                src={twitterData?.avatar || creator.avatar}
                 alt={creator.handle}
-                className="w-14 h-14 rounded-full border-2 border-gray-200 dark:border-gray-700"
+                className="w-14 h-14 rounded-full border-2 border-gray-200 dark:border-gray-700 object-cover"
               />
             ) : (
               <div className="w-14 h-14 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center text-xl font-bold text-white">
                 {creator.handle.slice(0, 2).toUpperCase()}
               </div>
             )}
-            {twitterData?.verified && (
-              <span className="absolute -bottom-1 -right-1 bg-blue-500 text-white text-xs rounded-full w-5 h-5 flex items-center justify-center">✓</span>
-            )}
+            {/* Score Badge */}
+            <motion.div
+              initial={{ scale: 0 }}
+              animate={{ scale: 1 }}
+              className="absolute -bottom-1 -right-1 text-lg"
+              title={`${scoreLevel.label} Creator`}
+            >
+              {scoreLevel.icon}
+            </motion.div>
           </div>
 
           {/* Info */}
           <div className="flex-1 min-w-0">
             <h3 className="text-lg font-bold text-gray-900 dark:text-white truncate">
-              {twitterData?.displayName || `@${creator.handle}`}
+              {twitterData?.displayName || creator.displayName || `@${creator.handle}`}
             </h3>
-            <p className="text-sm text-gray-500 dark:text-gray-400">
+            <a
+              href={`https://twitter.com/${creator.handle}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-sm text-blue-500 hover:underline"
+            >
               @{creator.handle}
-            </p>
+            </a>
           </div>
 
           {/* Attention Score */}
           <div className="text-right">
-            <div className={`text-2xl font-bold ${scoreColor}`}>
+            <motion.div 
+              className={`text-2xl font-bold bg-gradient-to-r ${scoreLevel.color} bg-clip-text text-transparent`}
+              key={attentionScore}
+              initial={{ scale: 1.2 }}
+              animate={{ scale: 1 }}
+            >
               {attentionScore}
-            </div>
+            </motion.div>
             <div className="text-xs text-gray-500">Score</div>
           </div>
         </div>
 
-        {/* Stats Row */}
+        {/* Stats Row - 修改版：添加迷你图 */}
         <div className="grid grid-cols-4 gap-2 mt-4 text-center">
-          <div className="p-2 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
-            <div className="text-sm font-bold text-gray-900 dark:text-white">
-              ${creator.price.toFixed(2)}
+          {/* Price + Mini Chart */}
+          <div className="p-2 bg-gray-50 dark:bg-gray-800/50 rounded-lg col-span-2">
+            <div className="flex items-center justify-center gap-2">
+              <div>
+                <motion.div 
+                  className={`text-lg font-bold transition-colors duration-300 ${
+                    priceFlash === 'up' ? 'text-green-500' :
+                    priceFlash === 'down' ? 'text-red-500' :
+                    'text-gray-900 dark:text-white'
+                  }`}
+                  key={creator.price}
+                  animate={priceFlash ? { scale: [1, 1.1, 1] } : {}}
+                >
+                  ${creator.price.toFixed(2)}
+                </motion.div>
+                {priceChange !== 0 && (
+                  <div className={`text-xs ${priceChange >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                    {priceChange >= 0 ? '+' : ''}{priceChange.toFixed(1)}%
+                  </div>
+                )}
+              </div>
+              {/* 迷你走势图 */}
+              <MiniPriceChart 
+                data={priceHistory} 
+                width={50} 
+                height={24}
+                positive={priceChange >= 0}
+              />
             </div>
-            <div className="text-xs text-gray-500">Price</div>
+            <div className="text-xs text-gray-500 mt-1">Price (7d)</div>
           </div>
+          
           <div className="p-2 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
             <div className="text-sm font-bold text-gray-900 dark:text-white">
               {creator.totalSupply}
@@ -151,125 +235,232 @@ export function CreatorCard({ creator, onBuy, onSell, isConnected, loading }: Cr
             <div className="text-xs text-gray-500">Supply</div>
           </div>
           <div className="p-2 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
-            <div className="text-sm font-bold text-gray-900 dark:text-white">
-              {twitterData ? formatNumber(twitterData.followers) : '-'}
-            </div>
-            <div className="text-xs text-gray-500">Followers</div>
-          </div>
-          <div className="p-2 bg-gray-50 dark:bg-gray-800/50 rounded-lg">
-            <div className="text-sm font-bold text-blue-600 dark:text-blue-400">
+            <div className={`text-sm font-bold ${creator.userShares > 0 ? 'text-blue-600 dark:text-blue-400' : 'text-gray-900 dark:text-white'}`}>
               {creator.userShares}
             </div>
             <div className="text-xs text-gray-500">You Own</div>
           </div>
         </div>
+
+        {/* User Position Badge */}
+        {creator.userShares > 0 && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            className="mt-3 p-2 bg-gradient-to-r from-blue-500/10 to-purple-500/10 dark:from-blue-500/20 dark:to-purple-500/20 rounded-lg border border-blue-200 dark:border-blue-800"
+          >
+            <div className="flex items-center justify-between text-sm">
+              <span className="text-blue-600 dark:text-blue-400 font-medium">Your Position</span>
+              <span className="font-bold text-gray-900 dark:text-white">
+                {creator.userShares} shares ≈ ${(creator.userShares * creator.price).toFixed(2)}
+              </span>
+            </div>
+          </motion.div>
+        )}
       </div>
 
       {/* Trade Section */}
       <div className="p-5">
-        {/* Tabs */}
-        <div className="flex gap-2 mb-4">
-          <button
-            onClick={() => setActiveTab('buy')}
-            className={`flex-1 py-2.5 rounded-xl font-semibold text-sm transition ${
-              activeTab === 'buy'
-                ? 'bg-green-500 text-white shadow-lg'
-                : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400'
-            }`}
-          >
-            Buy
-          </button>
-          <button
-            onClick={() => setActiveTab('sell')}
-            disabled={creator.userShares === 0}
-            className={`flex-1 py-2.5 rounded-xl font-semibold text-sm transition ${
-              activeTab === 'sell'
-                ? 'bg-red-500 text-white shadow-lg'
-                : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400'
-            } disabled:opacity-50`}
-          >
-            Sell
-          </button>
-        </div>
-
-        {activeTab === 'buy' ? (
-          <div className="space-y-3">
-            <div className="flex gap-2">
-              {[1, 5, 10, 25].map((val) => (
+        {/* Quick Buy/Sell Buttons */}
+        {!showTradePanel ? (
+          <div className="flex gap-2">
+            <motion.button
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              onClick={() => {
+                setActiveTab('buy');
+                setShowTradePanel(true);
+              }}
+              disabled={!isConnected}
+              className="flex-1 py-3 bg-gradient-to-r from-green-500 to-emerald-600 text-white font-bold rounded-xl shadow-lg shadow-green-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all"
+            >
+              Buy Key
+            </motion.button>
+            {creator.userShares > 0 && (
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={() => {
+                  setActiveTab('sell');
+                  setShowTradePanel(true);
+                }}
+                className="flex-1 py-3 bg-gradient-to-r from-red-500 to-rose-600 text-white font-bold rounded-xl shadow-lg shadow-red-500/20 transition-all"
+              >
+                Sell Key
+              </motion.button>
+            )}
+          </div>
+        ) : (
+          <AnimatePresence mode="wait">
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              className="space-y-4"
+            >
+              {/* Close Button */}
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-gray-600 dark:text-gray-400">
+                  {activeTab === 'buy' ? '🟢 Buy' : '🔴 Sell'} @{creator.handle}
+                </span>
                 <button
-                  key={val}
-                  onClick={() => setBuyAmount(val.toString())}
-                  className={`flex-1 py-2 rounded-lg text-sm font-medium transition ${
-                    buyAmount === val.toString()
-                      ? 'bg-green-500 text-white'
+                  onClick={() => setShowTradePanel(false)}
+                  className="w-8 h-8 rounded-lg bg-gray-100 dark:bg-gray-800 text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-700 transition flex items-center justify-center"
+                >
+                  ✕
+                </button>
+              </div>
+
+              {/* Tabs */}
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setActiveTab('buy')}
+                  className={`flex-1 py-2 rounded-xl font-semibold text-sm transition ${
+                    activeTab === 'buy'
+                      ? 'bg-green-500 text-white shadow-lg'
                       : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400'
                   }`}
                 >
-                  {val}
+                  Buy
                 </button>
-              ))}
-            </div>
-
-            <div className="p-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
-              <div className="flex justify-between text-sm">
-                <span className="text-gray-500">Total cost</span>
-                <span className="font-bold text-gray-900 dark:text-white">${estimatedCost.toFixed(2)}</span>
+                <button
+                  onClick={() => setActiveTab('sell')}
+                  disabled={creator.userShares === 0}
+                  className={`flex-1 py-2 rounded-xl font-semibold text-sm transition ${
+                    activeTab === 'sell'
+                      ? 'bg-red-500 text-white shadow-lg'
+                      : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400'
+                  } disabled:opacity-50`}
+                >
+                  Sell
+                </button>
               </div>
-            </div>
 
-            <button
-              onClick={handleBuy}
-              disabled={!isConnected || isProcessing || loading}
-              className="w-full py-3.5 bg-gradient-to-r from-green-500 to-emerald-600 text-white font-bold rounded-xl shadow-lg disabled:opacity-50 transition-all"
-            >
-              {isProcessing ? 'Processing...' : `Buy ${buyAmount} Share${parseInt(buyAmount) > 1 ? 's' : ''}`}
-            </button>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            <div className="flex gap-2">
-              {[1, Math.floor(creator.userShares / 2), creator.userShares]
-                .filter((v, i, a) => v > 0 && a.indexOf(v) === i)
-                .map((val) => (
-                  <button
-                    key={val}
-                    onClick={() => setSellAmount(val.toString())}
-                    className={`flex-1 py-2 rounded-lg text-sm font-medium transition ${
-                      sellAmount === val.toString()
-                        ? 'bg-red-500 text-white'
-                        : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400'
-                    }`}
+              {activeTab === 'buy' ? (
+                <div className="space-y-3">
+                  {/* Quick Amount Buttons */}
+                  <div className="flex gap-2">
+                    {[1, 5, 10, 25].map((val) => (
+                      <button
+                        key={val}
+                        onClick={() => setBuyAmount(val.toString())}
+                        className={`flex-1 py-2 rounded-lg text-sm font-semibold transition ${
+                          buyAmount === val.toString()
+                            ? 'bg-green-500 text-white'
+                            : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+                        }`}
+                      >
+                        {val}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Cost Estimate */}
+                  <div className="p-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
+                    <div className="flex justify-between text-sm mb-1">
+                      <span className="text-gray-500">Amount</span>
+                      <span className="font-medium text-gray-900 dark:text-white">{buyAmount} keys</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-500">Est. total cost</span>
+                      <span className="font-bold text-gray-900 dark:text-white">${estimatedCost.toFixed(2)}</span>
+                    </div>
+                    {parseInt(buyAmount) > 5 && (
+                      <div className="mt-2 text-xs text-orange-500 flex items-center gap-1">
+                        ⚠️ Price impact: ~{(parseInt(buyAmount) * 2).toFixed(0)}%
+                      </div>
+                    )}
+                  </div>
+
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={handleBuy}
+                    disabled={!isConnected || isProcessing || loading}
+                    className="w-full py-3.5 bg-gradient-to-r from-green-500 to-emerald-600 text-white font-bold rounded-xl shadow-lg disabled:opacity-50 transition-all flex items-center justify-center gap-2"
                   >
-                    {val === creator.userShares ? 'All' : val}
-                  </button>
-                ))}
-            </div>
+                    {isProcessing ? (
+                      <>
+                        <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        Processing...
+                      </>
+                    ) : (
+                      `Buy ${buyAmount} Key${parseInt(buyAmount) > 1 ? 's' : ''}`
+                    )}
+                  </motion.button>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {/* Available Balance */}
+                  <div className="text-xs text-gray-500">
+                    Available: <span className="font-semibold text-gray-900 dark:text-white">{creator.userShares} keys</span>
+                  </div>
 
-            <div className="p-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
-              <div className="flex justify-between text-sm">
-                <span className="text-gray-500">You receive (after 5% fee)</span>
-                <span className="font-bold text-gray-900 dark:text-white">${estimatedReturn.toFixed(2)}</span>
-              </div>
-            </div>
+                  {/* Quick Sell Buttons */}
+                  <div className="flex gap-2">
+                    {[1, Math.floor(creator.userShares / 2), creator.userShares]
+                      .filter((v, i, a) => v > 0 && a.indexOf(v) === i)
+                      .map((val) => (
+                        <button
+                          key={val}
+                          onClick={() => setSellAmount(val.toString())}
+                          className={`flex-1 py-2 rounded-lg text-sm font-semibold transition ${
+                            sellAmount === val.toString()
+                              ? 'bg-red-500 text-white'
+                              : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
+                          }`}
+                        >
+                          {val === creator.userShares ? 'All' : val}
+                        </button>
+                      ))}
+                  </div>
 
-            <button
-              onClick={handleSell}
-              disabled={!isConnected || isProcessing || loading || creator.userShares === 0}
-              className="w-full py-3.5 bg-gradient-to-r from-red-500 to-rose-600 text-white font-bold rounded-xl shadow-lg disabled:opacity-50 transition-all"
-            >
-              {isProcessing ? 'Processing...' : `Sell ${sellAmount} Share${parseInt(sellAmount) > 1 ? 's' : ''}`}
-            </button>
-          </div>
+                  {/* Return Estimate */}
+                  <div className="p-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
+                    <div className="flex justify-between text-sm mb-1">
+                      <span className="text-gray-500">Selling</span>
+                      <span className="font-medium text-gray-900 dark:text-white">{sellAmount} keys</span>
+                    </div>
+                    <div className="flex justify-between text-sm">
+                      <span className="text-gray-500">You receive (after 5% fee)</span>
+                      <span className="font-bold text-green-600 dark:text-green-400">${estimatedReturn.toFixed(2)}</span>
+                    </div>
+                  </div>
+
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={handleSell}
+                    disabled={!isConnected || isProcessing || loading || creator.userShares === 0}
+                    className="w-full py-3.5 bg-gradient-to-r from-red-500 to-rose-600 text-white font-bold rounded-xl shadow-lg disabled:opacity-50 transition-all flex items-center justify-center gap-2"
+                  >
+                    {isProcessing ? (
+                      <>
+                        <svg className="animate-spin h-5 w-5" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        Processing...
+                      </>
+                    ) : (
+                      `Sell ${sellAmount} Key${parseInt(sellAmount) > 1 ? 's' : ''}`
+                    )}
+                  </motion.button>
+                </div>
+              )}
+            </motion.div>
+          </AnimatePresence>
         )}
       </div>
-    </div>
+    </motion.div>
   );
 }
 
 const formatNumber = (num: number | undefined | null): string => {
-  // 添加空值检查
-  if (num === undefined || num === null) return '0';
-  
+  if (num === undefined || num === null) return '-';
   if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
   if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
   return num.toString();
