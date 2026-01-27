@@ -12,7 +12,6 @@ import {
 } from 'recharts';
 
 interface ProbabilityChartProps {
-  // 数据格式: [{ time: '12:00', yes: 65, no: 35 }, ...]
   data: { time: string; yes: number; no: number }[];
   height?: number;
   showLegend?: boolean;
@@ -70,14 +69,16 @@ export function ProbabilityChart({ data, height = 120, showLegend = false }: Pro
             width={35}
           />
           <Tooltip
-            formatter={(value: number, name: string) => [
-              `${value.toFixed(1)}%`,
-              name === 'yes' ? 'Yes' : 'No'
-            ]}
+            formatter={(value: number | string | undefined, name: string | number | undefined) => {
+              const numValue = typeof value === 'number' ? value : 0;
+              const label = name === 'yes' ? 'Yes' : name === 'no' ? 'No' : String(name);
+              return [`${numValue.toFixed(1)}%`, label];
+            }}
             contentStyle={tooltipStyles.contentStyle}
             itemStyle={tooltipStyles.itemStyle}
             labelStyle={tooltipStyles.labelStyle}
             cursor={{ stroke: 'rgba(156, 163, 175, 0.3)' }}
+            wrapperStyle={{ outline: 'none' }}
           />
           {showLegend && (
             <Legend 
@@ -94,7 +95,7 @@ export function ProbabilityChart({ data, height = 120, showLegend = false }: Pro
             stroke="#22c55e"
             strokeWidth={2}
             dot={false}
-            activeDot={{ r: 4, fill: '#22c55e' }}
+            activeDot={{ r: 4, fill: '#22c55e', stroke: 'none' }}
           />
           <Line
             type="monotone"
@@ -103,7 +104,7 @@ export function ProbabilityChart({ data, height = 120, showLegend = false }: Pro
             stroke="#ef4444"
             strokeWidth={2}
             dot={false}
-            activeDot={{ r: 4, fill: '#ef4444' }}
+            activeDot={{ r: 4, fill: '#ef4444', stroke: 'none' }}
           />
         </LineChart>
       </ResponsiveContainer>
@@ -150,26 +151,23 @@ export function MiniProbabilityChart({ data, height = 40 }: { data: number[]; he
 
 // ========== 生成模拟概率历史的工具函数 ==========
 export function generateMockProbabilityHistory(
-  currentYesPrice: number, // 当前 YES 的价格 (0-100)
+  currentYesPrice: number,
   points: number = 12
 ): { time: string; yes: number; no: number }[] {
   const data: { time: string; yes: number; no: number }[] = [];
   
-  // 起始值在 30-70 之间随机
   let yes = 30 + Math.random() * 40;
   
   const now = new Date();
   
   for (let i = points - 1; i >= 0; i--) {
-    const time = new Date(now.getTime() - i * 2 * 60 * 60 * 1000); // 每2小时一个点
+    const time = new Date(now.getTime() - i * 2 * 60 * 60 * 1000);
     const timeStr = time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
     
-    // 随机波动，但逐渐趋向当前值
-    const progress = (points - 1 - i) / (points - 1);
     const targetYes = currentYesPrice;
     const randomWalk = (Math.random() - 0.5) * 15;
     yes = yes + (targetYes - yes) * 0.3 + randomWalk;
-    yes = Math.max(5, Math.min(95, yes)); // 限制在 5-95 之间
+    yes = Math.max(5, Math.min(95, yes));
     
     data.push({
       time: timeStr,
@@ -178,7 +176,6 @@ export function generateMockProbabilityHistory(
     });
   }
   
-  // 确保最后一个点是当前价格
   if (data.length > 0) {
     data[data.length - 1].yes = currentYesPrice;
     data[data.length - 1].no = 100 - currentYesPrice;

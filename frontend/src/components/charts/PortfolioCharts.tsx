@@ -24,12 +24,12 @@ const tooltipStyles = {
     boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.5)',
   },
   itemStyle: {
-    color: '#F9FAFB',  // ✅ 强制文字为亮白色
+    color: '#F9FAFB',
     fontSize: '14px',
     fontWeight: 500,
   },
   labelStyle: {
-    color: '#9CA3AF',  // 标签文字为灰色
+    color: '#9CA3AF',
     marginBottom: '4px',
   },
 };
@@ -86,16 +86,21 @@ export function PortfolioPieChart({ holdings, title = 'Asset Distribution' }: Po
                 <Cell 
                   key={`cell-${index}`} 
                   fill={entry.color || PIE_COLORS[index % PIE_COLORS.length]}
-                  className="hover:opacity-80 transition-opacity cursor-pointer"
+                  className="hover:opacity-80 transition-opacity"
+                  style={{ outline: 'none' }}
                 />
               ))}
             </Pie>
             <Tooltip
-              formatter={(value: number, name: string) => [`$${value.toFixed(2)}`, name]}
+              formatter={(value: number | string | undefined, name: string | number | undefined) => {
+                const numValue = typeof value === 'number' ? value : 0;
+                return [`$${numValue.toFixed(2)}`, name || 'Value'];
+              }}
               contentStyle={tooltipStyles.contentStyle}
               itemStyle={tooltipStyles.itemStyle}
               labelStyle={tooltipStyles.labelStyle}
               cursor={false}
+              wrapperStyle={{ outline: 'none' }}
             />
           </PieChart>
         </ResponsiveContainer>
@@ -220,11 +225,15 @@ export function PortfolioHistoryChart({ data, title = 'Portfolio Value' }: Portf
               width={45}
             />
             <Tooltip
-              formatter={(value: number) => [`$${value.toFixed(2)}`, 'Value']}
+              formatter={(value: number | string | undefined) => {
+                const numValue = typeof value === 'number' ? value : 0;
+                return [`$${numValue.toFixed(2)}`, 'Value'];
+              }}
               contentStyle={tooltipStyles.contentStyle}
               itemStyle={tooltipStyles.itemStyle}
               labelStyle={tooltipStyles.labelStyle}
-              cursor={{ stroke: 'rgba(156, 163, 175, 0.3)' }}
+              cursor={{ stroke: 'rgba(156, 163, 175, 0.3)', strokeWidth: 1 }}
+              wrapperStyle={{ outline: 'none' }}
             />
             <Area
               type="monotone"
@@ -251,7 +260,6 @@ export function generateMockHistory(currentValue: number, days: number = 7): { d
     date.setDate(date.getDate() - i);
     const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
     
-    const progress = (days - i) / days;
     const targetValue = currentValue;
     const randomWalk = (Math.random() - 0.5) * currentValue * 0.1;
     value = value + (targetValue - value) * 0.3 + randomWalk;
@@ -273,7 +281,6 @@ export function generatePriceHistory(currentPrice: number, points: number = 7): 
   let price = currentPrice * (0.8 + Math.random() * 0.3);
   
   for (let i = 0; i < points; i++) {
-    const progress = i / (points - 1);
     const targetPrice = currentPrice;
     const randomWalk = (Math.random() - 0.5) * currentPrice * 0.15;
     price = price + (targetPrice - price) * 0.4 + randomWalk;
