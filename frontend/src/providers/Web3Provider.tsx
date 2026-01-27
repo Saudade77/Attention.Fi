@@ -17,7 +17,7 @@ import { useTheme } from 'next-themes';
 
 // config 放在组件外部，只创建一次
 const config = getDefaultConfig({
-  appName: 'PredictX',
+  appName: 'Attention.Fi',
   projectId: process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || '',
   chains: [sepolia],
   ssr: true,

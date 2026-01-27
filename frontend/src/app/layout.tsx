@@ -3,8 +3,8 @@ import { Web3Provider } from '@/providers/Web3Provider';
 import './globals.css';
 
 export const metadata = {
-  title: 'Attention.Fi',
-  description: 'Creator Market Platform',
+  title: 'Attention.fi - Internet Capital Market',
+  description: 'Trade creator tokens and prediction markets powered by attention economy',
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

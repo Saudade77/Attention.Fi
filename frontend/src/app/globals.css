@@ -57,3 +57,55 @@ input[type="number"]::-webkit-outer-spin-button {
 input[type="number"] {
   -moz-appearance: textfield;
 }
+
+/* ========== 去除 Recharts 图表的黑框/outline ========== */
+.recharts-wrapper,
+.recharts-surface,
+.recharts-legend-wrapper,
+.recharts-tooltip-wrapper,
+.recharts-default-tooltip,
+.recharts-pie,
+.recharts-pie-sector,
+.recharts-sector,
+.recharts-curve,
+.recharts-line,
+.recharts-area,
+.recharts-bar,
+.recharts-layer {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+/* SVG 相关元素 */
+.recharts-wrapper svg,
+.recharts-wrapper svg *,
+.recharts-wrapper path,
+.recharts-wrapper rect,
+.recharts-wrapper circle {
+  outline: none !important;
+}
+
+/* 去除所有可聚焦元素在 recharts 内的 focus 样式 */
+.recharts-wrapper *:focus,
+.recharts-wrapper *:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
+/* Tooltip wrapper 特殊处理 */
+.recharts-tooltip-wrapper {
+  outline: none !important;
+  border: none !important;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5) !important;
+}
+
+/* 饼图扇区点击时的边框 */
+.recharts-pie-sector:focus,
+.recharts-sector:focus {
+  outline: none !important;
+}
+
+/* ResponsiveContainer */
+.recharts-responsive-container {
+  outline: none !important;
+}

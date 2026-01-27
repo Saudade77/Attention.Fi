@@ -270,7 +270,7 @@ export default function Home() {
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between gap-4">
           <div className="flex items-center gap-6">
             <h1 className="text-xl sm:text-2xl font-black tracking-tight bg-gradient-to-r from-blue-600 to-purple-600 dark:from-blue-400 dark:to-purple-400 bg-clip-text text-transparent">
-              PredictX
+              Attention.Fi
             </h1>
 
             <nav className="hidden md:flex items-center gap-1">
