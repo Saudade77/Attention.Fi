@@ -14,6 +14,7 @@ import { CreatorPortfolio } from '@/components/portfolio/CreatorPortfolio';
 import { TradeToast } from '@/components/ui/TradeToast';
 import { motion, AnimatePresence } from 'framer-motion';
 import { PortfolioPieChart, PortfolioHistoryChart, generateMockHistory } from '@/components/charts';
+import { formatSocialMetric } from '@/utils/format';
 
 type Tab = 'predictions' | 'creators' | 'portfolio';
 type CreatorView = 'grid' | 'leaderboard';
@@ -805,19 +806,19 @@ export default function Home() {
                 <div className="grid grid-cols-3 gap-4 mb-6">
                   <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-xl">
                     <div className="text-xl font-bold text-gray-900 dark:text-white">
-                      {(twitterPreview.followers / 1000).toFixed(1)}K
+                      {formatSocialMetric(twitterPreview.followers)}
                     </div>
                     <div className="text-xs text-gray-500 dark:text-gray-400">Followers</div>
                   </div>
                   <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-xl">
                     <div className="text-xl font-bold text-gray-900 dark:text-white">
-                      {(twitterPreview.following / 1000).toFixed(1)}K
+                      {formatSocialMetric(twitterPreview.following)}
                     </div>
                     <div className="text-xs text-gray-500 dark:text-gray-400">Following</div>
                   </div>
                   <div className="text-center p-3 bg-gray-50 dark:bg-gray-800 rounded-xl">
                     <div className="text-xl font-bold text-gray-900 dark:text-white">
-                      {(twitterPreview.tweets / 1000).toFixed(1)}K
+                      {formatSocialMetric(twitterPreview.tweets)}
                     </div>
                     <div className="text-xs text-gray-500 dark:text-gray-400">Tweets</div>
                   </div>

@@ -5,10 +5,24 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
+import "./libraries/LMSR.sol";
 
-/// @title PredictionMarketV3 - 多选项市场 + 限价单
-contract PredictionMarketV3 is Ownable, ReentrancyGuard {
+/**
+ * @title PredictionMarketV4 - LMSR + CPMM 双算法预测市场
+ * @notice 支持 LMSR（对数市场评分规则）和 CPMM（恒定乘积）两种定价算法
+ * @dev 升级点：
+ *      1. 新增 LMSR 算法选项，提供更稳定的价格发现
+ *      2. 市场创建时可选择算法类型
+ *      3. LMSR 的 b 参数可调，控制流动性深度
+ */
+contract PredictionMarketV4 is Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
+
+    // ============ 枚举 ============
+    enum PricingAlgorithm {
+        CPMM,   // 恒定乘积做市商（原算法）
+        LMSR    // 对数市场评分规则（新算法）
+    }
 
     // ============ 结构体 ============
     struct Market {
@@ -23,10 +37,12 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
         uint256 liquidityPool;
         address creator;
         uint256 creatorFee;
+        PricingAlgorithm algorithm;
+        uint256 lmsrB;          // LMSR 流动性参数
     }
 
     struct LimitOrder {
-        uint256 id;             // 添加 id 字段
+        uint256 id;
         uint256 marketId;
         address user;
         uint8 outcomeIndex;
@@ -52,18 +68,13 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
     
     LimitOrder[] public orders;
     
-    // marketId => outcomeIndex => user => shares
     mapping(uint256 => mapping(uint8 => mapping(address => uint256))) public userShares;
     mapping(uint256 => mapping(address => bool)) public claimed;
     
-    // marketId => outcomeIndex => orderIds
     mapping(uint256 => mapping(uint8 => uint256[])) public marketBuyOrders;
     mapping(uint256 => mapping(uint8 => uint256[])) public marketSellOrders;
-    
-    // 用户订单追踪
     mapping(address => uint256[]) public userOrderIds;
     
-    // 价格历史
     mapping(uint256 => PricePoint[]) public priceHistory;
     
     uint256 public platformFee = 100;
@@ -72,9 +83,10 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
     uint256 public constant MIN_LIQUIDITY = 10 * 10**6;
     uint256 public constant SHARE_PRECISION = 10**18;
     uint256 public constant BASIS_POINTS = 10000;
+    uint256 public constant DEFAULT_LMSR_B = 100 * 10**18; // 默认 LMSR 参数
 
     // ============ 事件 ============
-    event MarketCreated(uint256 indexed marketId, string question, uint8 numOutcomes);
+    event MarketCreated(uint256 indexed marketId, string question, uint8 numOutcomes, uint8 algorithm);
     event MarketDeleted(uint256 indexed marketId);
     event SharesPurchased(uint256 indexed marketId, address indexed buyer, uint8 outcomeIndex, uint256 usdcAmount, uint256 shares);
     event SharesSold(uint256 indexed marketId, address indexed seller, uint8 outcomeIndex, uint256 shares, uint256 usdcOut);
@@ -91,6 +103,8 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
     }
 
     // ============ 创建市场 ============
+    
+    /// @notice 创建市场（默认使用 CPMM 算法，向后兼容）
     function createMarket(
         string calldata question,
         string calldata category,
@@ -100,6 +114,60 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
         uint256 creatorFee,
         string[] calldata _outcomeLabels
     ) external onlyOwner returns (uint256 marketId) {
+        return _createMarket(
+            question,
+            category,
+            imageUrl,
+            duration,
+            initialLiquidity,
+            creatorFee,
+            _outcomeLabels,
+            PricingAlgorithm.CPMM,
+            DEFAULT_LMSR_B
+        );
+    }
+    
+    /// @notice 创建市场（指定算法）
+    /// @param algorithm 0 = CPMM, 1 = LMSR
+    /// @param lmsrB LMSR 流动性参数（仅 LMSR 有效），越大滑点越小
+    function createMarketWithAlgorithm(
+        string calldata question,
+        string calldata category,
+        string calldata imageUrl,
+        uint256 duration,
+        uint256 initialLiquidity,
+        uint256 creatorFee,
+        string[] calldata _outcomeLabels,
+        uint8 algorithm,
+        uint256 lmsrB
+    ) external onlyOwner returns (uint256 marketId) {
+        require(algorithm <= 1, "Invalid algorithm");
+        
+        return _createMarket(
+            question,
+            category,
+            imageUrl,
+            duration,
+            initialLiquidity,
+            creatorFee,
+            _outcomeLabels,
+            PricingAlgorithm(algorithm),
+            lmsrB > 0 ? lmsrB : DEFAULT_LMSR_B
+        );
+    }
+    
+    /// @notice 内部创建市场函数
+    function _createMarket(
+        string calldata question,
+        string calldata category,
+        string calldata imageUrl,
+        uint256 duration,
+        uint256 initialLiquidity,
+        uint256 creatorFee,
+        string[] calldata _outcomeLabels,
+        PricingAlgorithm algorithm,
+        uint256 lmsrB
+    ) internal returns (uint256 marketId) {
         uint8 numOutcomes = uint8(_outcomeLabels.length);
         require(numOutcomes >= 2 && numOutcomes <= 10, "2-10 outcomes");
         require(bytes(question).length > 0, "Empty question");
@@ -122,60 +190,53 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
             winnerIndex: 0,
             liquidityPool: initialLiquidity,
             creator: msg.sender,
-            creatorFee: creatorFee
+            creatorFee: creatorFee,
+            algorithm: algorithm,
+            lmsrB: lmsrB
         }));
 
-        // 初始化结果
+        // 初始化份额 - 均匀分配
         uint256 sharesPerOutcome = (initialLiquidity * SHARE_PRECISION / 10**6) / numOutcomes;
         for (uint8 i = 0; i < numOutcomes; i++) {
             outcomeLabels[marketId].push(_outcomeLabels[i]);
             outcomeShares[marketId].push(sharesPerOutcome);
         }
 
-        // 记录初始价格
         _recordPrice(marketId);
 
-        emit MarketCreated(marketId, question, numOutcomes);
+        emit MarketCreated(marketId, question, numOutcomes, uint8(algorithm));
     }
 
-    // ============ 删除市场 (仅Owner) ============
-    /// @notice 删除市场，返还所有用户的资金
-    /// @param marketId 要删除的市场ID
+    // ============ 删除市场 ============
     function deleteMarket(uint256 marketId) external onlyOwner {
         require(marketId < markets.length, "Invalid market");
         Market storage m = markets[marketId];
         require(m.status == 0 || m.status == 2, "Cannot delete resolved market");
         
-        // 标记为已删除
-        m.status = 3; // Deleted
+        m.status = 3;
         
-        // 取消该市场的所有活跃订单
         for (uint8 i = 0; i < m.numOutcomes; i++) {
-            // 取消买单
             uint256[] storage buyOrderIds = marketBuyOrders[marketId][i];
             for (uint256 j = 0; j < buyOrderIds.length; j++) {
                 LimitOrder storage order = orders[buyOrderIds[j]];
-                if (order.status == 0) { // Active
-                    order.status = 2; // Cancelled
+                if (order.status == 0) {
+                    order.status = 2;
                     if (order.usdcDeposit > 0) {
                         usdc.safeTransfer(order.user, order.usdcDeposit);
                     }
                 }
             }
             
-            // 取消卖单（返还份额会在下面统一处理）
             uint256[] storage sellOrderIds = marketSellOrders[marketId][i];
             for (uint256 j = 0; j < sellOrderIds.length; j++) {
                 LimitOrder storage order = orders[sellOrderIds[j]];
                 if (order.status == 0) {
                     order.status = 2;
-                    // 卖单的份额已经从用户那里扣除，需要返还
                     userShares[marketId][order.outcomeIndex][order.user] += order.shares;
                 }
             }
         }
         
-        // 返还初始流动性给创建者
         if (m.liquidityPool > 0) {
             uint256 refund = m.liquidityPool;
             m.liquidityPool = 0;
@@ -186,7 +247,20 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
     }
 
     // ============ 价格计算 ============
+    
+    /// @notice 获取所有选项的价格
     function getPrices(uint256 marketId) public view returns (uint256[] memory prices) {
+        Market storage m = markets[marketId];
+        
+        if (m.algorithm == PricingAlgorithm.LMSR) {
+            return _getLMSRPrices(marketId);
+        } else {
+            return _getCPMMPrices(marketId);
+        }
+    }
+    
+    /// @notice CPMM 价格计算（原算法）
+    function _getCPMMPrices(uint256 marketId) internal view returns (uint256[] memory prices) {
         Market storage m = markets[marketId];
         prices = new uint256[](m.numOutcomes);
         
@@ -204,17 +278,29 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
         }
         
         for (uint8 i = 0; i < m.numOutcomes; i++) {
-            // ✅ 修复：使用当前选项的份额占比作为价格
             prices[i] = (outcomeShares[marketId][i] * BASIS_POINTS) / totalShares;
             if (prices[i] < 100) prices[i] = 100;
             if (prices[i] > 9900) prices[i] = 9900;
         }
+    }
+    
+    /// @notice LMSR 价格计算
+    function _getLMSRPrices(uint256 marketId) internal view returns (uint256[] memory) {
+        Market storage m = markets[marketId];
+        uint256[] memory shares = outcomeShares[marketId];
+        return LMSR.getPrices(shares, m.lmsrB);
     }
 
     function getPrice(uint256 marketId) external view returns (uint256 yesPrice, uint256 noPrice) {
         uint256[] memory prices = getPrices(marketId);
         yesPrice = prices[0];
         noPrice = prices.length > 1 ? prices[1] : BASIS_POINTS - prices[0];
+    }
+    
+    /// @notice 获取市场算法类型
+    function getMarketAlgorithm(uint256 marketId) external view returns (uint8 algorithm, uint256 lmsrB) {
+        Market storage m = markets[marketId];
+        return (uint8(m.algorithm), m.lmsrB);
     }
 
     // ============ 价格历史 ============
@@ -234,7 +320,6 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
         
         PricePoint[] storage points = priceHistory[marketId];
         
-        // 如果没有历史记录，返回当前价格
         if (points.length == 0) {
             timestamps = new uint256[](1);
             prices = new uint256[][](1);
@@ -257,6 +342,7 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
     }
 
     // ============ AMM 交易 ============
+    
     function buyShares(
         uint256 marketId,
         uint8 outcomeIndex,
@@ -285,22 +371,66 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
             accumulatedFees += feeAmount;
         }
 
-        // CPMM 计算
-        shares = _calculateShares(marketId, outcomeIndex, netAmount);
+        // 根据算法计算份额
+        if (m.algorithm == PricingAlgorithm.LMSR) {
+            shares = _calculateLMSRShares(marketId, outcomeIndex, netAmount);
+        } else {
+            shares = _calculateCPMMShares(marketId, outcomeIndex, netAmount);
+        }
+        
         require(shares >= minShares, "Slippage");
 
         // 更新状态
-        _updateSharesAfterBuy(marketId, outcomeIndex, netAmount, shares);
+        if (m.algorithm == PricingAlgorithm.LMSR) {
+            _updateSharesAfterLMSRBuy(marketId, outcomeIndex, shares);
+        } else {
+            _updateSharesAfterCPMMBuy(marketId, outcomeIndex, netAmount, shares);
+        }
+        
         m.liquidityPool += netAmount;
         userShares[marketId][outcomeIndex][msg.sender] += shares;
 
-        // 记录价格
         _recordPrice(marketId);
 
         emit SharesPurchased(marketId, msg.sender, outcomeIndex, usdcAmount, shares);
     }
-
-    function _calculateShares(uint256 marketId, uint8 outcomeIndex, uint256 netAmount) internal view returns (uint256) {
+    
+    /// @notice LMSR 份额计算
+    function _calculateLMSRShares(
+        uint256 marketId, 
+        uint8 outcomeIndex, 
+        uint256 netAmount
+    ) internal view returns (uint256) {
+        Market storage m = markets[marketId];
+        uint256[] memory shares = outcomeShares[marketId];
+        
+        // 使用二分查找确定能买多少份额
+        uint256 low = 1;
+        uint256 high = netAmount * SHARE_PRECISION / 10**6; // 最大可能份额
+        uint256 result = 0;
+        
+        while (low <= high) {
+            uint256 mid = (low + high) / 2;
+            uint256 cost = LMSR.getBuyCost(shares, outcomeIndex, mid, m.lmsrB);
+            
+            if (cost <= netAmount) {
+                result = mid;
+                low = mid + 1;
+            } else {
+                if (mid == 0) break;
+                high = mid - 1;
+            }
+        }
+        
+        return result > 0 ? result : 1;
+    }
+    
+    /// @notice CPMM 份额计算（原算法）
+    function _calculateCPMMShares(
+        uint256 marketId, 
+        uint8 outcomeIndex, 
+        uint256 netAmount
+    ) internal view returns (uint256) {
         uint256 usdcInShares = (netAmount * SHARE_PRECISION) / 10**6;
         
         uint256 otherShares = 0;
@@ -313,8 +443,23 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
         
         return (usdcInShares * otherShares) / (outcomeShares[marketId][outcomeIndex] + usdcInShares);
     }
+    
+    /// @notice LMSR 买入后更新份额
+    function _updateSharesAfterLMSRBuy(
+        uint256 marketId, 
+        uint8 outcomeIndex, 
+        uint256 shares
+    ) internal {
+        outcomeShares[marketId][outcomeIndex] += shares;
+    }
 
-    function _updateSharesAfterBuy(uint256 marketId, uint8 outcomeIndex, uint256 netAmount, uint256 shares) internal {
+    /// @notice CPMM 买入后更新份额（原算法）
+    function _updateSharesAfterCPMMBuy(
+        uint256 marketId, 
+        uint8 outcomeIndex, 
+        uint256 netAmount, 
+        uint256 shares
+    ) internal {
         Market storage m = markets[marketId];
         uint256 otherSharesTotal = 0;
         
@@ -352,8 +497,12 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
 
         userShares[marketId][outcomeIndex][msg.sender] -= sharesAmount;
 
-        // 计算返还
-        usdcOut = _calculateSellReturn(marketId, outcomeIndex, sharesAmount);
+        // 根据算法计算返还
+        if (m.algorithm == PricingAlgorithm.LMSR) {
+            usdcOut = _calculateLMSRSellReturn(marketId, outcomeIndex, sharesAmount);
+        } else {
+            usdcOut = _calculateCPMMSellReturn(marketId, outcomeIndex, sharesAmount);
+        }
         
         // 扣除费用
         uint256 fee = (usdcOut * platformFee) / BASIS_POINTS;
@@ -363,18 +512,39 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
         require(usdcOut >= minUSDC, "Slippage");
         require(usdcOut <= m.liquidityPool, "Insufficient liquidity");
 
-        _updateSharesAfterSell(marketId, outcomeIndex, sharesAmount, usdcOut + fee);
+        // 更新状态
+        if (m.algorithm == PricingAlgorithm.LMSR) {
+            _updateSharesAfterLMSRSell(marketId, outcomeIndex, sharesAmount);
+        } else {
+            _updateSharesAfterCPMMSell(marketId, outcomeIndex, sharesAmount, usdcOut + fee);
+        }
+        
         m.liquidityPool -= usdcOut;
         
         usdc.safeTransfer(msg.sender, usdcOut);
 
-        // 记录价格
         _recordPrice(marketId);
 
         emit SharesSold(marketId, msg.sender, outcomeIndex, sharesAmount, usdcOut);
     }
+    
+    /// @notice LMSR 卖出收益计算
+    function _calculateLMSRSellReturn(
+        uint256 marketId, 
+        uint8 outcomeIndex, 
+        uint256 sharesAmount
+    ) internal view returns (uint256) {
+        Market storage m = markets[marketId];
+        uint256[] memory shares = outcomeShares[marketId];
+        return LMSR.getSellRevenue(shares, outcomeIndex, sharesAmount, m.lmsrB);
+    }
 
-    function _calculateSellReturn(uint256 marketId, uint8 outcomeIndex, uint256 sharesAmount) internal view returns (uint256) {
+    /// @notice CPMM 卖出收益计算（原算法）
+    function _calculateCPMMSellReturn(
+        uint256 marketId, 
+        uint8 outcomeIndex, 
+        uint256 sharesAmount
+    ) internal view returns (uint256) {
         uint256 otherSharesTotal = 0;
         Market storage m = markets[marketId];
         
@@ -387,8 +557,23 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
         uint256 returnShares = (sharesAmount * outcomeShares[marketId][outcomeIndex]) / (otherSharesTotal + sharesAmount);
         return (returnShares * 10**6) / SHARE_PRECISION;
     }
+    
+    /// @notice LMSR 卖出后更新份额
+    function _updateSharesAfterLMSRSell(
+        uint256 marketId, 
+        uint8 outcomeIndex, 
+        uint256 sharesAmount
+    ) internal {
+        outcomeShares[marketId][outcomeIndex] -= sharesAmount;
+    }
 
-    function _updateSharesAfterSell(uint256 marketId, uint8 outcomeIndex, uint256 sharesAmount, uint256 usdcOutGross) internal {
+    /// @notice CPMM 卖出后更新份额（原算法）
+    function _updateSharesAfterCPMMSell(
+        uint256 marketId, 
+        uint8 outcomeIndex, 
+        uint256 sharesAmount, 
+        uint256 usdcOutGross
+    ) internal {
         Market storage m = markets[marketId];
         
         outcomeShares[marketId][outcomeIndex] -= (usdcOutGross * SHARE_PRECISION) / 10**6;
@@ -401,7 +586,7 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
         }
     }
 
-    // ============ 限价单 ============
+    // ============ 限价单（保持原有逻辑）============
     function placeBuyOrder(
         uint256 marketId,
         uint8 outcomeIndex,
@@ -492,11 +677,9 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
     }
 
     // ============ 用户订单查询 ============
-    /// @notice 获取用户在指定市场的活跃订单
     function getUserActiveOrders(address user, uint256 marketId) external view returns (LimitOrder[] memory) {
         uint256[] storage allOrderIds = userOrderIds[user];
         
-        // 先计算符合条件的订单数量
         uint256 count = 0;
         for (uint256 i = 0; i < allOrderIds.length; i++) {
             LimitOrder storage order = orders[allOrderIds[i]];
@@ -505,7 +688,6 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
             }
         }
         
-        // 创建结果数组
         LimitOrder[] memory result = new LimitOrder[](count);
         uint256 index = 0;
         for (uint256 i = 0; i < allOrderIds.length; i++) {
@@ -519,7 +701,6 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
         return result;
     }
 
-    /// @notice 获取用户所有活跃订单
     function getAllUserActiveOrders(address user) external view returns (LimitOrder[] memory) {
         uint256[] storage allOrderIds = userOrderIds[user];
         
@@ -553,7 +734,6 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
         m.winnerIndex = winnerIndex;
         m.resolutionTime = block.timestamp;
 
-        // 取消该市场的所有活跃订单并退款
         _cancelAllMarketOrders(marketId);
 
         emit MarketResolved(marketId, winnerIndex);
@@ -563,7 +743,6 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
         Market storage m = markets[marketId];
         
         for (uint8 i = 0; i < m.numOutcomes; i++) {
-            // 取消买单
             uint256[] storage buyOrderIds = marketBuyOrders[marketId][i];
             for (uint256 j = 0; j < buyOrderIds.length; j++) {
                 LimitOrder storage order = orders[buyOrderIds[j]];
@@ -575,7 +754,6 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
                 }
             }
             
-            // 取消卖单
             uint256[] storage sellOrderIds = marketSellOrders[marketId][i];
             for (uint256 j = 0; j < sellOrderIds.length; j++) {
                 LimitOrder storage order = orders[sellOrderIds[j]];
@@ -591,8 +769,6 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
         Market storage m = markets[marketId];
         require(m.status == 0, "Not open");
         m.status = 2;
-        
-        // 取消所有订单
         _cancelAllMarketOrders(marketId);
     }
 
@@ -653,6 +829,21 @@ contract PredictionMarketV3 is Ownable, ReentrancyGuard {
     ) {
         Market storage m = markets[marketId];
         return (m.question, m.category, m.imageUrl, m.endTime, m.status, m.numOutcomes, m.liquidityPool, m.winnerIndex, m.creator);
+    }
+    
+    /// @notice 获取市场完整信息（含算法）
+    function getMarketFullInfo(uint256 marketId) external view returns (
+        string memory question,
+        string memory category,
+        uint256 endTime,
+        uint8 status,
+        uint8 numOutcomes,
+        uint256 liquidityPool,
+        uint8 algorithm,
+        uint256 lmsrB
+    ) {
+        Market storage m = markets[marketId];
+        return (m.question, m.category, m.endTime, m.status, m.numOutcomes, m.liquidityPool, uint8(m.algorithm), m.lmsrB);
     }
 
     function getMarketOutcomes(uint256 marketId) external view returns (

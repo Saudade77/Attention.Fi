@@ -1,9 +1,28 @@
 {
-  "MockUSDC": "0x389c754E38cEEA5DDb6B0CD960c84159d58B5E36",
-  "PredictionMarketV3": "0x0B5d992857bb46220Fc0e11a134D8b173b453446",
-  "CreatorMarketV2": "0xf7fD403AAc66b56963D3beA415fA04b11F378cBE",
+  "MockUSDC": "0x1E4324709c979A60eE333790E3eaf4872f0583cE",
+  "PredictionMarketV4": "0x1388Df11b906Fe85a4B34a7BF49209882c324DF8",
+  "CreatorMarketV3": "0x6dD90669122eEfd357a7327dBB9289b35fbb9D8a",
   "deployer": "0xe4E65EA4721C5f4Fd8ED1D9fcF5670b21CD0cF57",
   "network": "sepolia",
   "chainId": 11155111,
-  "timestamp": "2026-01-27T01:29:40.174Z"
+  "timestamp": "2026-01-28T08:45:19.311Z",
+  "features": {
+    "predictionMarket": {
+      "version": 4,
+      "algorithms": [
+        "CPMM",
+        "LMSR"
+      ],
+      "description": "支持 CPMM 和 LMSR 双定价算法"
+    },
+    "creatorMarket": {
+      "version": 3,
+      "curveTypes": [
+        "LINEAR",
+        "EXPONENTIAL",
+        "SIGMOID"
+      ],
+      "description": "支持线性、指数、Sigmoid 三种联合曲线"
+    }
+  }
 }

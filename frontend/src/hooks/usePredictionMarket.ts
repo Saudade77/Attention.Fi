@@ -2,15 +2,22 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useAccount, usePublicClient, useWalletClient } from 'wagmi';
-import { parseUnits, formatUnits, getContract } from 'viem';
+import { parseUnits, formatUnits } from 'viem';
 import { 
   PREDICTION_MARKET_ADDRESS, 
   USDC_ADDRESS, 
   USDC_DECIMALS,
 } from '@/constants/config';
 
-// ABIs
+// ============ 定价算法枚举 ============
+export enum PricingAlgorithm {
+  CPMM = 0,   // 恒定乘积做市商（原算法）
+  LMSR = 1,   // 对数市场评分规则（新算法）
+}
+
+// ============ ABIs (更新为 V4) ============
 const PREDICTION_MARKET_ABI = [
+  // === 查询函数 ===
   {
     name: 'getMarketCount',
     type: 'function',
@@ -33,6 +40,34 @@ const PREDICTION_MARKET_ABI = [
       { name: 'liquidityPool', type: 'uint256' },
       { name: 'winnerIndex', type: 'uint8' },
       { name: 'creator', type: 'address' },
+    ],
+  },
+  // 🆕 V4 新增：获取完整市场信息（含算法）
+  {
+    name: 'getMarketFullInfo',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'marketId', type: 'uint256' }],
+    outputs: [
+      { name: 'question', type: 'string' },
+      { name: 'category', type: 'string' },
+      { name: 'endTime', type: 'uint256' },
+      { name: 'status', type: 'uint8' },
+      { name: 'numOutcomes', type: 'uint8' },
+      { name: 'liquidityPool', type: 'uint256' },
+      { name: 'algorithm', type: 'uint8' },
+      { name: 'lmsrB', type: 'uint256' },
+    ],
+  },
+  // 🆕 V4 新增：获取市场算法类型
+  {
+    name: 'getMarketAlgorithm',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'marketId', type: 'uint256' }],
+    outputs: [
+      { name: 'algorithm', type: 'uint8' },
+      { name: 'lmsrB', type: 'uint256' },
     ],
   },
   {
@@ -103,6 +138,7 @@ const PREDICTION_MARKET_ABI = [
     inputs: [],
     outputs: [{ type: 'address' }],
   },
+  // === 写入函数 ===
   {
     name: 'createMarket',
     type: 'function',
@@ -115,6 +151,24 @@ const PREDICTION_MARKET_ABI = [
       { name: 'initialLiquidity', type: 'uint256' },
       { name: 'creatorFee', type: 'uint256' },
       { name: 'outcomeLabels', type: 'string[]' },
+    ],
+    outputs: [{ type: 'uint256' }],
+  },
+  // 🆕 V4 新增：创建市场（指定算法）
+  {
+    name: 'createMarketWithAlgorithm',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'question', type: 'string' },
+      { name: 'category', type: 'string' },
+      { name: 'imageUrl', type: 'string' },
+      { name: 'duration', type: 'uint256' },
+      { name: 'initialLiquidity', type: 'uint256' },
+      { name: 'creatorFee', type: 'uint256' },
+      { name: 'outcomeLabels', type: 'string[]' },
+      { name: 'algorithm', type: 'uint8' },
+      { name: 'lmsrB', type: 'uint256' },
     ],
     outputs: [{ type: 'uint256' }],
   },
@@ -239,6 +293,7 @@ const USDC_ABI = [
   },
 ] as const;
 
+// ============ 类型定义 ============
 export interface Market {
   id: number;
   question: string;
@@ -256,7 +311,11 @@ export interface Market {
   userShares: bigint[];
   hasClaimed: boolean;
   volume: string;
-  // 兼容旧接口 - 这些是必需的！
+  // 🆕 V4 新增：算法相关
+  algorithm: PricingAlgorithm;
+  algorithmName: string;
+  lmsrB: bigint;
+  // 兼容旧接口
   yesShares: bigint;
   noShares: bigint;
   yesPrice: number;
@@ -284,6 +343,20 @@ export interface PriceHistory {
   prices: number[][];
 }
 
+// 🆕 创建市场参数（支持算法选择）
+export interface CreateMarketParams {
+  question: string;
+  category: string;
+  imageUrl: string;
+  durationDays: number;
+  initialLiquidity: string;
+  creatorFeeBps: number;
+  outcomeLabels?: string[];
+  algorithm?: PricingAlgorithm;
+  lmsrB?: string; // LMSR 流动性参数（如 "100"）
+}
+
+// ============ Hook ============
 export function usePredictionMarket() {
   const { address, isConnected } = useAccount();
   const publicClient = usePublicClient();
@@ -294,6 +367,15 @@ export function usePredictionMarket() {
   const [userOrders, setUserOrders] = useState<LimitOrder[]>([]);
   const [loading, setLoading] = useState(false);
   const [usdcBalance, setUsdcBalance] = useState('0');
+
+  // 算法名称映射
+  const getAlgorithmName = (algo: number): string => {
+    switch (algo) {
+      case 0: return 'CPMM';
+      case 1: return 'LMSR';
+      default: return 'Unknown';
+    }
+  };
 
   // 检查是否是 owner
   useEffect(() => {
@@ -358,6 +440,22 @@ export function usePredictionMarket() {
           // 跳过已删除的市场
           if (Number(info[4]) === 3) continue;
 
+          // 🆕 获取算法信息
+          let algorithm: PricingAlgorithm = PricingAlgorithm.CPMM;
+          let lmsrB: bigint = 0n;
+          try {
+            const algoInfo = await publicClient.readContract({
+              address: PREDICTION_MARKET_ADDRESS as `0x${string}`,
+              abi: PREDICTION_MARKET_ABI,
+              functionName: 'getMarketAlgorithm',
+              args: [BigInt(i)],
+            }) as any;
+            algorithm = Number(algoInfo[0]) as PricingAlgorithm;
+            lmsrB = algoInfo[1];
+          } catch {
+            // 如果调用失败，可能是旧版合约，默认 CPMM
+          }
+
           const outcomes = await publicClient.readContract({
             address: PREDICTION_MARKET_ADDRESS as `0x${string}`,
             abi: PREDICTION_MARKET_ABI,
@@ -415,6 +513,11 @@ export function usePredictionMarket() {
             userShares: userShares.length > 0 ? userShares : Array(numOutcomes).fill(0n),
             hasClaimed,
             volume: formatUnits(info[6] as bigint, USDC_DECIMALS),
+            // 🆕 算法信息
+            algorithm,
+            algorithmName: getAlgorithmName(algorithm),
+            lmsrB,
+            // 兼容旧接口
             yesPrice: Math.round(normalizedPrices[0] / 100),
             noPrice: normalizedPrices.length > 1 ? Math.round(normalizedPrices[1] / 100) : Math.round((10000 - normalizedPrices[0]) / 100),
             userYesShares: userShares[0] || 0n,
@@ -515,7 +618,7 @@ export function usePredictionMarket() {
     await fetchBalance();
   }, [walletClient, publicClient, address, fetchBalance]);
 
-  // 创建市场
+  // 🆕 创建市场（支持算法选择）
   const createMarket = useCallback(async (
     question: string,
     category: string,
@@ -523,22 +626,72 @@ export function usePredictionMarket() {
     durationDays: number,
     initialLiquidity: string,
     creatorFeeBps: number,
-    outcomeLabels: string[] = ['Yes', 'No']
+    outcomeLabels: string[] = ['Yes', 'No'],
+    algorithm: PricingAlgorithm = PricingAlgorithm.CPMM,
+    lmsrB: string = '100' // 默认 LMSR 参数
   ) => {
     if (!walletClient || !publicClient) throw new Error('Not connected');
     const liquidityWei = parseUnits(initialLiquidity, USDC_DECIMALS);
     await ensureAllowance(liquidityWei);
 
-    const hash = await walletClient.writeContract({
-      address: PREDICTION_MARKET_ADDRESS as `0x${string}`,
-      abi: PREDICTION_MARKET_ABI,
-      functionName: 'createMarket',
-      args: [question, category, imageUrl, BigInt(durationDays * 24 * 60 * 60), liquidityWei, BigInt(creatorFeeBps), outcomeLabels],
-    });
+    let hash: `0x${string}`;
+
+    if (algorithm === PricingAlgorithm.LMSR) {
+      // 使用 LMSR 算法创建市场
+      const lmsrBWei = parseUnits(lmsrB, 18); // LMSR b 参数使用 18 位精度
+      hash = await walletClient.writeContract({
+        address: PREDICTION_MARKET_ADDRESS as `0x${string}`,
+        abi: PREDICTION_MARKET_ABI,
+        functionName: 'createMarketWithAlgorithm',
+        args: [
+          question, 
+          category, 
+          imageUrl, 
+          BigInt(durationDays * 24 * 60 * 60), 
+          liquidityWei, 
+          BigInt(creatorFeeBps), 
+          outcomeLabels,
+          algorithm,
+          lmsrBWei,
+        ],
+      });
+    } else {
+      // 使用默认 CPMM 算法
+      hash = await walletClient.writeContract({
+        address: PREDICTION_MARKET_ADDRESS as `0x${string}`,
+        abi: PREDICTION_MARKET_ABI,
+        functionName: 'createMarket',
+        args: [
+          question, 
+          category, 
+          imageUrl, 
+          BigInt(durationDays * 24 * 60 * 60), 
+          liquidityWei, 
+          BigInt(creatorFeeBps), 
+          outcomeLabels
+        ],
+      });
+    }
+    
     await publicClient.waitForTransactionReceipt({ hash });
     await fetchMarkets();
     await fetchBalance();
   }, [walletClient, publicClient, ensureAllowance, fetchMarkets, fetchBalance]);
+
+  // 🆕 创建市场（简化版，使用参数对象）
+  const createMarketAdvanced = useCallback(async (params: CreateMarketParams) => {
+    return createMarket(
+      params.question,
+      params.category,
+      params.imageUrl,
+      params.durationDays,
+      params.initialLiquidity,
+      params.creatorFeeBps,
+      params.outcomeLabels || ['Yes', 'No'],
+      params.algorithm || PricingAlgorithm.CPMM,
+      params.lmsrB || '100'
+    );
+  }, [createMarket]);
 
   // 删除市场
   const deleteMarket = useCallback(async (marketId: number) => {
@@ -679,8 +832,10 @@ export function usePredictionMarket() {
     userOrders,
     loading,
     usdcBalance,
+    // 操作
     faucet,
     createMarket,
+    createMarketAdvanced, // 🆕 新增
     deleteMarket,
     buyShares,
     sellShares,
@@ -692,5 +847,7 @@ export function usePredictionMarket() {
     fetchMarkets,
     fetchUserOrders,
     fetchBalance,
+    // 🆕 导出枚举供外部使用
+    PricingAlgorithm,
   };
 }

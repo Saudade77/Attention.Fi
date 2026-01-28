@@ -2,8 +2,13 @@
 
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Market, LimitOrder } from '@/hooks/usePredictionMarket';
-// ✅ 引入概率图表组件
-import { MiniProbabilityChart, generateMockProbabilityHistory } from '@/components/charts/ProbabilityChart';
+// ✅ 引入支持多选项的概率图表组件
+import { 
+  ProbabilityChart,
+  MiniProbabilityChart, 
+  generateMockProbabilityHistory,
+  generateMiniProbabilityData,
+} from '@/components/charts/ProbabilityChart';
 
 interface MarketCardProps {
   market: Market;
@@ -66,6 +71,16 @@ const OUTCOME_BTN_COLORS = [
   'from-pink-500 to-pink-600 hover:from-pink-600 hover:to-pink-700',
 ];
 
+// ✅ 图表颜色（与 ProbabilityChart 一致）
+const CHART_COLORS = [
+  '#22c55e', // green
+  '#ef4444', // red
+  '#3b82f6', // blue
+  '#a855f7', // purple
+  '#f97316', // orange
+  '#ec4899', // pink
+];
+
 export function MarketCard({ 
   market, 
   userOrders = [],
@@ -113,24 +128,46 @@ export function MarketCard({
 
   const marketOrders = userOrders.filter(o => o.marketId === market.id);
 
-  // ✅ 生成模拟的概率历史数据（仅用于二元市场）
+  const numOutcomes = market.numOutcomes || 2;
+
+  // ✅ 获取当前各选项价格
+  const currentPrices = useMemo(() => {
+    if (market.prices && market.prices.length > 0) {
+      return market.prices.map(p => p / 100);
+    }
+    // 兼容旧版二元市场
+    if (numOutcomes === 2) {
+      const yesPrice = typeof market.yesPrice === 'number' ? market.yesPrice : 50;
+      return [yesPrice, 100 - yesPrice];
+    }
+    // 默认平均分布
+    return Array(numOutcomes).fill(100 / numOutcomes);
+  }, [market.prices, market.yesPrice, numOutcomes]);
+
+  // ✅ 获取选项标签
+  const outcomeLabels = useMemo(() => {
+    if (market.outcomeLabels && market.outcomeLabels.length >= numOutcomes) {
+      return market.outcomeLabels.slice(0, numOutcomes);
+    }
+    if (numOutcomes === 2) {
+      return ['Yes', 'No'];
+    }
+    return Array.from({ length: numOutcomes }, (_, i) => `Option ${String.fromCharCode(65 + i)}`);
+  }, [market.outcomeLabels, numOutcomes]);
+
+  // ✅ 生成概率历史数据（支持多选项）
   const probabilityHistory = useMemo(() => {
-    const numOutcomes = market.numOutcomes || 2;
-    if (numOutcomes !== 2) return [];
-    
-    const currentYesPrice = market.prices?.[0] 
-      ? market.prices[0] / 100 
-      : (typeof market.yesPrice === 'number' ? market.yesPrice : 50);
-    
-    return generateMockProbabilityHistory(currentYesPrice, 12).map(d => d.yes);
-  }, [market.prices, market.yesPrice, market.numOutcomes]);
+    return generateMiniProbabilityData(currentPrices, 12);
+  }, [currentPrices]);
+
+  // ✅ 生成完整图表数据
+  const fullChartData = useMemo(() => {
+    return generateMockProbabilityHistory(currentPrices, 12);
+  }, [currentPrices]);
 
   const getOutcomeLabel = useCallback((index: number) => {
-    if (market.outcomeLabels && market.outcomeLabels[index]) {
-      return market.outcomeLabels[index];
-    }
-    return index === 0 ? 'Yes' : index === 1 ? 'No' : `Option ${index + 1}`;
-  }, [market.outcomeLabels]);
+    return outcomeLabels[index] || `Option ${index + 1}`;
+  }, [outcomeLabels]);
 
   const getOutcomePrice = useCallback((index: number) => {
     if (market.prices && market.prices[index] !== undefined) {
@@ -230,8 +267,6 @@ export function MarketCard({
     ? (market.prices?.[selectedOutcome] || (selectedOutcome === 0 ? market.yesPrice * 100 : market.noPrice * 100)) / 100
     : 50;
 
-  const numOutcomes = market.numOutcomes || 2;
-
   return (
     <div className="bg-white dark:bg-[#12141c] rounded-2xl border border-gray-200 dark:border-gray-800 overflow-hidden shadow-sm hover:shadow-lg dark:hover:border-gray-700 transition-all duration-200">
       <div className={`h-1.5 bg-gradient-to-r ${categoryColor}`} />
@@ -272,8 +307,8 @@ export function MarketCard({
           {market.question}
         </h3>
 
-        {/* ✅ 新增：概率走势图（仅二元市场显示） */}
-        {numOutcomes === 2 && probabilityHistory.length > 1 && (
+        {/* ✅ 概率走势图（支持所有市场类型） */}
+        {probabilityHistory.length > 1 && (
           <div className="mb-4">
             <div 
               className="flex items-center justify-between cursor-pointer group"
@@ -285,24 +320,36 @@ export function MarketCard({
                   {showChart ? '▼' : '▶'}
                 </span>
               </div>
-              <div className="flex items-center gap-3 text-xs">
-                <span className="flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full bg-green-500"></span>
-                  <span className="text-gray-500">Yes</span>
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="w-2 h-2 rounded-full bg-red-500"></span>
-                  <span className="text-gray-500">No</span>
-                </span>
+              {/* ✅ 动态图例 */}
+              <div className="flex items-center gap-2 text-xs flex-wrap justify-end">
+                {outcomeLabels.map((label, idx) => (
+                  <span key={idx} className="flex items-center gap-1">
+                    <span 
+                      className="w-2 h-2 rounded-full" 
+                      style={{ backgroundColor: CHART_COLORS[idx % CHART_COLORS.length] }}
+                    />
+                    <span className="text-gray-500 truncate max-w-[60px]">{label}</span>
+                  </span>
+                ))}
               </div>
             </div>
             
-            {/* 默认显示迷你图，点击展开完整图 */}
-            <div className={`mt-2 transition-all duration-300 ${showChart ? 'h-28' : 'h-10'}`}>
-              <MiniProbabilityChart 
-                data={probabilityHistory} 
-                height={showChart ? 100 : 36} 
-              />
+            {/* 图表区域 */}
+            <div className={`mt-2 transition-all duration-300 overflow-hidden ${showChart ? 'h-32' : 'h-10'}`}>
+              {showChart ? (
+                <ProbabilityChart 
+                  data={fullChartData}
+                  outcomeLabels={outcomeLabels}
+                  height={120}
+                  showLegend={false}
+                />
+              ) : (
+                <MiniProbabilityChart 
+                  data={probabilityHistory}
+                  outcomeLabels={outcomeLabels}
+                  height={36} 
+                />
+              )}
             </div>
           </div>
         )}

@@ -1,10 +1,201 @@
 import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useAccount, usePublicClient, useWalletClient } from 'wagmi';
+import { parseUnits, formatUnits } from 'viem';
+import { 
+  CREATOR_MARKET_ADDRESS, 
+  USDC_ADDRESS, 
+  USDC_DECIMALS,
+} from '@/constants/config';
 
-// 本地存储的 key
-const STORAGE_KEY = 'attention_fi_creators';
-const ACTIVITY_STORAGE_KEY = 'attention_fi_activities';
-const PRICE_HISTORY_KEY = 'attention_fi_price_history';
+// ============ 曲线类型枚举 ============
+export enum CurveType {
+  LINEAR = 0,      // 线性: price = A * supply + B
+  EXPONENTIAL = 1, // 指数: price = B + A * supply²
+  SIGMOID = 2,     // S型: 早期慢 -> 中期快 -> 后期慢
+}
 
+// ============ ABI 定义 ============
+const CREATOR_MARKET_ABI = [
+  // === 查询函数 ===
+  {
+    name: 'getCreatorCount',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
+    name: 'getCreatorByIndex',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'index', type: 'uint256' }],
+    outputs: [{ type: 'string' }],
+  },
+  {
+    name: 'getCreatorInfo',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'handle', type: 'string' }],
+    outputs: [
+      { name: 'exists', type: 'bool' },
+      { name: 'totalSupply', type: 'uint256' },
+      { name: 'poolBalance', type: 'uint256' },
+      { name: 'currentPrice', type: 'uint256' },
+      { name: 'curveType', type: 'uint8' },
+      { name: 'curveA', type: 'uint256' },
+      { name: 'curveB', type: 'uint256' },
+      { name: 'inflectionPoint', type: 'uint256' },
+    ],
+  },
+  {
+    name: 'getCurveConfig',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'handle', type: 'string' }],
+    outputs: [
+      { name: 'curveType', type: 'uint8' },
+      { name: 'A', type: 'uint256' },
+      { name: 'B', type: 'uint256' },
+      { name: 'inflectionPoint', type: 'uint256' },
+    ],
+  },
+  {
+    name: 'getUserShares',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'handle', type: 'string' },
+      { name: 'user', type: 'address' },
+    ],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
+    name: 'getBuyPrice',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'handle', type: 'string' },
+      { name: 'amount', type: 'uint256' },
+    ],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
+    name: 'getSellPrice',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'handle', type: 'string' },
+      { name: 'amount', type: 'uint256' },
+    ],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
+    name: 'getCurrentPrice',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'handle', type: 'string' }],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
+    name: 'estimatePriceImpact',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'handle', type: 'string' },
+      { name: 'amount', type: 'uint256' },
+      { name: 'isBuy', type: 'bool' },
+    ],
+    outputs: [
+      { name: 'avgPrice', type: 'uint256' },
+      { name: 'priceImpactBps', type: 'uint256' },
+    ],
+  },
+  // === 写入函数 ===
+  {
+    name: 'registerCreator',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'handle', type: 'string' }],
+    outputs: [],
+  },
+  {
+    name: 'registerCreatorWithCurve',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'handle', type: 'string' },
+      { name: 'curveType', type: 'uint8' },
+      { name: 'A', type: 'uint256' },
+      { name: 'B', type: 'uint256' },
+    ],
+    outputs: [],
+  },
+  {
+    name: 'registerCreatorFull',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'handle', type: 'string' },
+      { name: 'curveType', type: 'uint8' },
+      { name: 'A', type: 'uint256' },
+      { name: 'B', type: 'uint256' },
+      { name: 'inflectionPoint', type: 'uint256' },
+    ],
+    outputs: [],
+  },
+  {
+    name: 'buyShares',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'handle', type: 'string' },
+      { name: 'amount', type: 'uint256' },
+    ],
+    outputs: [],
+  },
+  {
+    name: 'sellShares',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'handle', type: 'string' },
+      { name: 'amount', type: 'uint256' },
+    ],
+    outputs: [],
+  },
+] as const;
+
+const USDC_ABI = [
+  {
+    name: 'balanceOf',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [{ name: 'account', type: 'address' }],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
+    name: 'allowance',
+    type: 'function',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'owner', type: 'address' },
+      { name: 'spender', type: 'address' },
+    ],
+    outputs: [{ type: 'uint256' }],
+  },
+  {
+    name: 'approve',
+    type: 'function',
+    stateMutability: 'nonpayable',
+    inputs: [
+      { name: 'spender', type: 'address' },
+      { name: 'amount', type: 'uint256' },
+    ],
+    outputs: [{ type: 'bool' }],
+  },
+] as const;
+
+// ============ 类型定义 ============
 export interface Creator {
   handle: string;
   displayName?: string;
@@ -18,12 +209,18 @@ export interface Creator {
   tweets?: number;
   verified?: boolean;
   launchedAt?: number;
-  // 新增字段
+  // 曲线配置
+  curveType: CurveType;
+  curveTypeName: string;
+  curveA: bigint;
+  curveB: bigint;
+  inflectionPoint: bigint;
+  // 统计
   attentionScore?: number;
   priceChange24h?: number;
   holders?: number;
   volume24h?: number;
-  avgBuyPrice?: number; // 用户平均买入价格
+  avgBuyPrice?: number;
 }
 
 export interface Activity {
@@ -58,20 +255,34 @@ export interface PortfolioStats {
   }>;
 }
 
-// ✅ 安全获取显示名称的辅助函数
-function getSafeDisplayName(
-  twitterDisplayName?: string,
-  handle?: string
-): string {
-  const name = twitterDisplayName?.trim();
-  // 过滤无效的名字
+export interface PriceImpact {
+  avgPrice: number;
+  priceImpactBps: number;
+  priceImpactPercent: number;
+}
+
+// ============ 辅助函数 ============
+const STORAGE_KEY = 'attention_fi_creators_meta';
+const ACTIVITY_STORAGE_KEY = 'attention_fi_activities';
+const PRICE_HISTORY_KEY = 'attention_fi_price_history';
+
+function getCurveTypeName(curveType: number): string {
+  switch (curveType) {
+    case 0: return 'Linear';
+    case 1: return 'Exponential';
+    case 2: return 'Sigmoid';
+    default: return 'Unknown';
+  }
+}
+
+function getSafeDisplayName(displayName?: string, handle?: string): string {
+  const name = displayName?.trim();
   const invalidNames = ['unknown', '', 'null', 'undefined', '(null)'];
   
   if (name && !invalidNames.includes(name.toLowerCase())) {
     return name;
   }
   
-  // 如果 handle 存在，返回带 @ 的格式或直接返回
   if (handle) {
     return handle.startsWith('@') ? handle : `@${handle}`;
   }
@@ -79,24 +290,40 @@ function getSafeDisplayName(
   return 'Anonymous';
 }
 
-// 从 localStorage 读取 creators
-function loadCreatorsFromStorage(): Creator[] {
-  if (typeof window === 'undefined') return [];
+function calculateAttentionScore(creator: Creator): number {
+  const followers = creator.followers || 0;
+  const tweets = creator.tweets || 0;
+  const supply = creator.totalSupply || 1;
+  const poolBalance = creator.poolBalance || 0;
+  
+  const followerScore = Math.min(Math.log10(followers + 1) * 100, 400);
+  const engagementScore = Math.min(Math.log10(tweets + 1) * 50, 200);
+  const marketScore = Math.min(Math.log10(poolBalance + 1) * 100, 300);
+  const supplyScore = Math.min(supply * 10, 100);
+  
+  return Math.round(followerScore + engagementScore + marketScore + supplyScore);
+}
+
+function generateId(): string {
+  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+}
+
+// localStorage 工具
+function loadMetaFromStorage(): Record<string, any> {
+  if (typeof window === 'undefined') return {};
   try {
     const data = localStorage.getItem(STORAGE_KEY);
-    return data ? JSON.parse(data) : [];
+    return data ? JSON.parse(data) : {};
   } catch {
-    return [];
+    return {};
   }
 }
 
-// 保存 creators 到 localStorage
-function saveCreatorsToStorage(creators: Creator[]) {
+function saveMetaToStorage(meta: Record<string, any>) {
   if (typeof window === 'undefined') return;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(creators));
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(meta));
 }
 
-// 从 localStorage 读取活动记录
 function loadActivitiesFromStorage(): Activity[] {
   if (typeof window === 'undefined') return [];
   try {
@@ -107,15 +334,12 @@ function loadActivitiesFromStorage(): Activity[] {
   }
 }
 
-// 保存活动记录到 localStorage
 function saveActivitiesToStorage(activities: Activity[]) {
   if (typeof window === 'undefined') return;
-  // 只保留最近 100 条
   const trimmed = activities.slice(0, 100);
   localStorage.setItem(ACTIVITY_STORAGE_KEY, JSON.stringify(trimmed));
 }
 
-// 从 localStorage 读取价格历史
 function loadPriceHistoryFromStorage(): Record<string, PricePoint[]> {
   if (typeof window === 'undefined') return {};
   try {
@@ -126,69 +350,147 @@ function loadPriceHistoryFromStorage(): Record<string, PricePoint[]> {
   }
 }
 
-// 保存价格历史到 localStorage
 function savePriceHistoryToStorage(history: Record<string, PricePoint[]>) {
   if (typeof window === 'undefined') return;
   localStorage.setItem(PRICE_HISTORY_KEY, JSON.stringify(history));
 }
 
-// 计算 Attention Score
-function calculateAttentionScore(creator: Creator): number {
-  const followers = creator.followers || 0;
-  const tweets = creator.tweets || 0;
-  const supply = creator.totalSupply || 1;
-  const poolBalance = creator.poolBalance || 0;
-  
-  // 基于粉丝数、推文数、供应量和池子余额计算
-  const followerScore = Math.min(Math.log10(followers + 1) * 100, 400);
-  const engagementScore = Math.min(Math.log10(tweets + 1) * 50, 200);
-  const marketScore = Math.min(Math.log10(poolBalance + 1) * 100, 300);
-  const supplyScore = Math.min(supply * 10, 100);
-  
-  return Math.round(followerScore + engagementScore + marketScore + supplyScore);
-}
+// ============ Hook ============
+export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) {
+  const { address: wagmiAddress, isConnected: wagmiConnected } = useAccount();
+  const publicClient = usePublicClient();
+  const { data: walletClient } = useWalletClient();
 
-// 生成唯一 ID
-function generateId(): string {
-  return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-}
+  // 使用传入的参数或 wagmi 的值
+  const address = walletAddress || wagmiAddress;
+  const connected = isConnected !== undefined ? isConnected : wagmiConnected;
 
-export function useCreatorMarket(walletAddress: string, isConnected: boolean) {
   const [creators, setCreators] = useState<Creator[]>([]);
   const [activities, setActivities] = useState<Activity[]>([]);
   const [priceHistory, setPriceHistory] = useState<Record<string, PricePoint[]>>({});
   const [loading, setLoading] = useState(false);
+  const [creatorMeta, setCreatorMeta] = useState<Record<string, any>>({});
 
-  // 获取 Creator 列表（从 localStorage）
+  // 确保 USDC allowance
+  const ensureAllowance = useCallback(async (requiredAmount: bigint) => {
+    if (!publicClient || !walletClient || !address) return;
+
+    const currentAllowance = await publicClient.readContract({
+      address: USDC_ADDRESS as `0x${string}`,
+      abi: USDC_ABI,
+      functionName: 'allowance',
+      args: [address as `0x${string}`, CREATOR_MARKET_ADDRESS as `0x${string}`],
+    }) as bigint;
+
+    if (currentAllowance < requiredAmount) {
+      const approveAmount = requiredAmount * 10n;
+      const hash = await walletClient.writeContract({
+        address: USDC_ADDRESS as `0x${string}`,
+        abi: USDC_ABI,
+        functionName: 'approve',
+        args: [CREATOR_MARKET_ADDRESS as `0x${string}`, approveAmount],
+      });
+      await publicClient.waitForTransactionReceipt({ hash });
+    }
+  }, [publicClient, walletClient, address]);
+
+  // 获取 Creator 列表（从链上 + localStorage 元数据）
   const fetchCreators = useCallback(async () => {
-    if (!isConnected) return;
+    if (!connected || !publicClient) return;
     
     setLoading(true);
     try {
-      await new Promise((r) => setTimeout(r, 300));
-      
-      const stored = loadCreatorsFromStorage();
-      // 计算每个 creator 的 attention score 和 24h 变化
-      const enhanced = stored.map(c => ({
-        ...c,
-        // ✅ 修复已存储的 Unknown 名称
-        displayName: getSafeDisplayName(c.displayName, c.handle),
-        attentionScore: c.attentionScore || calculateAttentionScore(c),
-        priceChange24h: c.priceChange24h || (Math.random() - 0.5) * 20, // 模拟
-        holders: c.holders || Math.max(1, Math.floor(c.totalSupply * 0.7)),
-        volume24h: c.volume24h || c.poolBalance * 0.1,
-      }));
-      
-      setCreators(enhanced);
-      // ✅ 保存修复后的数据
-      saveCreatorsToStorage(enhanced);
-      
+      const meta = loadMetaFromStorage();
+      setCreatorMeta(meta);
+
+      // 获取链上 creator 数量
+      const count = await publicClient.readContract({
+        address: CREATOR_MARKET_ADDRESS as `0x${string}`,
+        abi: CREATOR_MARKET_ABI,
+        functionName: 'getCreatorCount',
+      }) as bigint;
+
+      const list: Creator[] = [];
+
+      for (let i = 0; i < Number(count); i++) {
+        try {
+          // 获取 handle
+          const handle = await publicClient.readContract({
+            address: CREATOR_MARKET_ADDRESS as `0x${string}`,
+            abi: CREATOR_MARKET_ABI,
+            functionName: 'getCreatorByIndex',
+            args: [BigInt(i)],
+          }) as string;
+
+          // 获取链上信息
+          const info = await publicClient.readContract({
+            address: CREATOR_MARKET_ADDRESS as `0x${string}`,
+            abi: CREATOR_MARKET_ABI,
+            functionName: 'getCreatorInfo',
+            args: [handle],
+          }) as any;
+
+          if (!info[0]) continue; // exists check
+
+          // 获取用户份额
+          let userShares = 0n;
+          if (address) {
+            try {
+              userShares = await publicClient.readContract({
+                address: CREATOR_MARKET_ADDRESS as `0x${string}`,
+                abi: CREATOR_MARKET_ABI,
+                functionName: 'getUserShares',
+                args: [handle, address as `0x${string}`],
+              }) as bigint;
+            } catch {}
+          }
+
+          // 合并链上数据 + 本地元数据
+          const localMeta = meta[handle.toLowerCase()] || {};
+
+          const creator: Creator = {
+            handle,
+            displayName: getSafeDisplayName(localMeta.displayName, handle),
+            avatar: localMeta.avatar || '',
+            totalSupply: Number(info[1]),
+            poolBalance: Number(formatUnits(info[2], USDC_DECIMALS)),
+            price: Number(formatUnits(info[3], USDC_DECIMALS)),
+            userShares: Number(userShares),
+            followers: localMeta.followers || 0,
+            following: localMeta.following || 0,
+            tweets: localMeta.tweets || 0,
+            verified: localMeta.verified || false,
+            launchedAt: localMeta.launchedAt || Date.now(),
+            // 曲线配置
+            curveType: Number(info[4]) as CurveType,
+            curveTypeName: getCurveTypeName(Number(info[4])),
+            curveA: info[5],
+            curveB: info[6],
+            inflectionPoint: info[7],
+            // 统计
+            attentionScore: 0,
+            priceChange24h: localMeta.priceChange24h || 0,
+            holders: localMeta.holders || Math.max(1, Math.floor(Number(info[1]) * 0.7)),
+            volume24h: localMeta.volume24h || Number(formatUnits(info[2], USDC_DECIMALS)) * 0.1,
+            avgBuyPrice: localMeta.avgBuyPrice || 0,
+          };
+
+          creator.attentionScore = calculateAttentionScore(creator);
+          list.push(creator);
+        } catch (e) {
+          console.error(`Failed to fetch creator ${i}:`, e);
+        }
+      }
+
+      setCreators(list);
       setActivities(loadActivitiesFromStorage());
       setPriceHistory(loadPriceHistoryFromStorage());
+    } catch (error) {
+      console.error('Failed to fetch creators:', error);
     } finally {
       setLoading(false);
     }
-  }, [isConnected]);
+  }, [connected, publicClient, address]);
 
   // 添加活动记录
   const addActivity = useCallback((activity: Omit<Activity, 'id'>) => {
@@ -214,7 +516,6 @@ export function useCreatorMarket(walletAddress: string, isConnected: boolean) {
         timestamp: Date.now(),
         price,
       };
-      // 保留最近 100 个点
       const updated = {
         ...prev,
         [handle]: [...history, newPoint].slice(-100),
@@ -224,7 +525,18 @@ export function useCreatorMarket(walletAddress: string, isConnected: boolean) {
     });
   }, []);
 
-  // 注册新 Creator
+  // 保存 creator 元数据到 localStorage
+  const saveCreatorMeta = useCallback((handle: string, data: any) => {
+    const meta = loadMetaFromStorage();
+    meta[handle.toLowerCase()] = {
+      ...meta[handle.toLowerCase()],
+      ...data,
+    };
+    saveMetaToStorage(meta);
+    setCreatorMeta(meta);
+  }, []);
+
+  // 🆕 注册新 Creator（支持曲线选择）
   const registerCreator = useCallback(async (
     handle: string,
     twitterData?: {
@@ -234,66 +546,79 @@ export function useCreatorMarket(walletAddress: string, isConnected: boolean) {
       following?: number;
       tweets?: number;
       verified?: boolean;
+    },
+    curveConfig?: {
+      curveType?: CurveType;
+      A?: string;
+      B?: string;
+      inflectionPoint?: string;
     }
   ): Promise<boolean> => {
-    if (!handle.trim()) return false;
+    if (!handle.trim() || !walletClient || !publicClient) return false;
     setLoading(true);
 
     try {
-      await new Promise((r) => setTimeout(r, 1500));
+      let hash: `0x${string}`;
 
-      const initialPrice = 1.0;
-      
-      // ✅ 使用安全的显示名称获取函数
+      if (curveConfig && curveConfig.curveType !== undefined) {
+        // 使用自定义曲线
+        const A = curveConfig.A ? BigInt(curveConfig.A) : BigInt(1e4);
+        const B = curveConfig.B ? parseUnits(curveConfig.B, USDC_DECIMALS) : BigInt(1e6);
+        
+        if (curveConfig.inflectionPoint) {
+          // 完整参数
+          hash = await walletClient.writeContract({
+            address: CREATOR_MARKET_ADDRESS as `0x${string}`,
+            abi: CREATOR_MARKET_ABI,
+            functionName: 'registerCreatorFull',
+            args: [handle, curveConfig.curveType, A, B, BigInt(curveConfig.inflectionPoint)],
+          });
+        } else {
+          // 简化参数
+          hash = await walletClient.writeContract({
+            address: CREATOR_MARKET_ADDRESS as `0x${string}`,
+            abi: CREATOR_MARKET_ABI,
+            functionName: 'registerCreatorWithCurve',
+            args: [handle, curveConfig.curveType, A, B],
+          });
+        }
+      } else {
+        // 默认线性曲线
+        hash = await walletClient.writeContract({
+          address: CREATOR_MARKET_ADDRESS as `0x${string}`,
+          abi: CREATOR_MARKET_ABI,
+          functionName: 'registerCreator',
+          args: [handle],
+        });
+      }
+
+      await publicClient.waitForTransactionReceipt({ hash });
+
+      // 保存元数据到 localStorage
       const safeDisplayName = getSafeDisplayName(twitterData?.displayName, handle);
-      
-      const newCreator: Creator = {
-        handle: handle,
-        displayName: safeDisplayName,  // ✅ 使用安全的名称
+      saveCreatorMeta(handle, {
+        displayName: safeDisplayName,
         avatar: twitterData?.avatar || '',
-        totalSupply: 1,
-        poolBalance: 0,
-        price: initialPrice,
-        userShares: 0,
         followers: twitterData?.followers || 0,
         following: twitterData?.following || 0,
         tweets: twitterData?.tweets || 0,
         verified: twitterData?.verified || false,
         launchedAt: Date.now(),
-        attentionScore: 0,
-        priceChange24h: 0,
-        holders: 1,
-        volume24h: 0,
-        avgBuyPrice: 0,
-      };
-
-      // 计算 attention score
-      newCreator.attentionScore = calculateAttentionScore(newCreator);
-
-      setCreators((prev) => {
-        const filtered = prev.filter(
-          (c) => c.handle.toLowerCase() !== handle.toLowerCase()
-        );
-        const updated = [newCreator, ...filtered];
-        saveCreatorsToStorage(updated);
-        return updated;
       });
-
-      // 记录初始价格
-      recordPricePoint(handle, initialPrice);
 
       // 添加 launch 活动
       addActivity({
         type: 'launch',
-        user: walletAddress,
+        user: address || '',
         creatorHandle: handle,
-        creatorName: safeDisplayName,  // ✅ 使用安全的名称
+        creatorName: safeDisplayName,
         amount: 0,
-        price: initialPrice,
+        price: 1.0,
         totalValue: 0,
         timestamp: Date.now(),
       });
 
+      await fetchCreators();
       return true;
     } catch (error) {
       console.error('Register creator failed:', error);
@@ -301,75 +626,64 @@ export function useCreatorMarket(walletAddress: string, isConnected: boolean) {
     } finally {
       setLoading(false);
     }
-  }, [walletAddress, addActivity, recordPricePoint]);
+  }, [walletClient, publicClient, address, saveCreatorMeta, addActivity, fetchCreators]);
 
   // 购买 Creator 份额
   const buyShares = useCallback(async (handle: string, amount: number): Promise<boolean> => {
-    if (amount <= 0) return false;
+    if (amount <= 0 || !walletClient || !publicClient) return false;
     setLoading(true);
 
     try {
-      await new Promise((r) => setTimeout(r, 1000));
+      // 获取购买价格
+      const cost = await publicClient.readContract({
+        address: CREATOR_MARKET_ADDRESS as `0x${string}`,
+        abi: CREATOR_MARKET_ABI,
+        functionName: 'getBuyPrice',
+        args: [handle, BigInt(amount)],
+      }) as bigint;
 
-      let activityData: Omit<Activity, 'id'> | null = null;
+      // 添加 5% 手续费
+      const totalCost = (cost * 105n) / 100n;
+      
+      // 确保 allowance
+      await ensureAllowance(totalCost);
 
-      setCreators((prev) => {
-        const updated = prev.map((c) => {
-          if (c.handle.toLowerCase() === handle.toLowerCase()) {
-            const newSupply = c.totalSupply + amount;
-            const cost = c.price * amount * (1 + amount * 0.02); // 包含滑点
-            const newPrice = c.price + amount * 0.1;
-            
-            // 计算新的平均买入价格
-            const prevTotalCost = (c.avgBuyPrice || c.price) * c.userShares;
-            const newTotalCost = prevTotalCost + cost;
-            const newUserShares = c.userShares + amount;
-            const newAvgBuyPrice = newUserShares > 0 ? newTotalCost / newUserShares : newPrice;
-
-            // ✅ 使用安全的名称
-            const safeName = getSafeDisplayName(c.displayName, c.handle);
-
-            // 准备活动数据
-            activityData = {
-              type: 'buy',
-              user: walletAddress,
-              creatorHandle: handle,
-              creatorName: safeName,
-              amount,
-              price: c.price,
-              totalValue: cost,
-              timestamp: Date.now(),
-            };
-
-            return {
-              ...c,
-              totalSupply: newSupply,
-              poolBalance: c.poolBalance + cost,
-              price: newPrice,
-              userShares: newUserShares,
-              holders: (c.holders || 1) + (c.userShares === 0 ? 1 : 0),
-              volume24h: (c.volume24h || 0) + cost,
-              avgBuyPrice: newAvgBuyPrice,
-              attentionScore: calculateAttentionScore({ ...c, totalSupply: newSupply, poolBalance: c.poolBalance + cost }),
-            };
-          }
-          return c;
-        });
-        saveCreatorsToStorage(updated);
-        return updated;
+      // 执行购买
+      const hash = await walletClient.writeContract({
+        address: CREATOR_MARKET_ADDRESS as `0x${string}`,
+        abi: CREATOR_MARKET_ABI,
+        functionName: 'buyShares',
+        args: [handle, BigInt(amount)],
       });
 
-      // 记录价格和活动
-      const creator = creators.find(c => c.handle.toLowerCase() === handle.toLowerCase());
-      if (creator) {
-        const newPrice = creator.price + amount * 0.1;
-        recordPricePoint(handle, newPrice);
-      }
-      
-      if (activityData) {
-        addActivity(activityData);
-      }
+      await publicClient.waitForTransactionReceipt({ hash });
 
+      // 获取新价格
+      const newPrice = await publicClient.readContract({
+        address: CREATOR_MARKET_ADDRESS as `0x${string}`,
+        abi: CREATOR_MARKET_ABI,
+        functionName: 'getCurrentPrice',
+        args: [handle],
+      }) as bigint;
+
+      const priceNum = Number(formatUnits(newPrice, USDC_DECIMALS));
+      recordPricePoint(handle, priceNum);
+
+      // 查找 creator 获取名称
+      const creator = creators.find(c => c.handle.toLowerCase() === handle.toLowerCase());
+      
+      addActivity({
+        type: 'buy',
+        user: address || '',
+        creatorHandle: handle,
+        creatorName: creator?.displayName || handle,
+        amount,
+        price: Number(formatUnits(cost, USDC_DECIMALS)) / amount,
+        totalValue: Number(formatUnits(cost, USDC_DECIMALS)),
+        timestamp: Date.now(),
+      });
+
+      await fetchCreators();
       return true;
     } catch (error) {
       console.error('Buy shares failed:', error);
@@ -377,67 +691,57 @@ export function useCreatorMarket(walletAddress: string, isConnected: boolean) {
     } finally {
       setLoading(false);
     }
-  }, [walletAddress, creators, addActivity, recordPricePoint]);
+  }, [walletClient, publicClient, address, ensureAllowance, creators, recordPricePoint, addActivity, fetchCreators]);
 
   // 卖出 Creator 份额
   const sellShares = useCallback(async (handle: string, amount: number): Promise<boolean> => {
-    if (amount <= 0) return false;
+    if (amount <= 0 || !walletClient || !publicClient) return false;
     setLoading(true);
 
     try {
-      await new Promise((r) => setTimeout(r, 1000));
+      // 获取卖出收益
+      const proceeds = await publicClient.readContract({
+        address: CREATOR_MARKET_ADDRESS as `0x${string}`,
+        abi: CREATOR_MARKET_ABI,
+        functionName: 'getSellPrice',
+        args: [handle, BigInt(amount)],
+      }) as bigint;
 
-      let activityData: Omit<Activity, 'id'> | null = null;
-
-      setCreators((prev) => {
-        const updated = prev.map((c) => {
-          if (c.handle.toLowerCase() === handle.toLowerCase() && c.userShares >= amount) {
-            const payout = c.price * amount * 0.95;
-            const newPrice = Math.max(1, c.price - amount * 0.1);
-            const newUserShares = c.userShares - amount;
-
-            // ✅ 使用安全的名称
-            const safeName = getSafeDisplayName(c.displayName, c.handle);
-
-            activityData = {
-              type: 'sell',
-              user: walletAddress,
-              creatorHandle: handle,
-              creatorName: safeName,
-              amount,
-              price: c.price,
-              totalValue: payout,
-              timestamp: Date.now(),
-            };
-
-            return {
-              ...c,
-              totalSupply: c.totalSupply - amount,
-              poolBalance: Math.max(0, c.poolBalance - payout),
-              price: newPrice,
-              userShares: newUserShares,
-              holders: newUserShares === 0 ? Math.max(1, (c.holders || 1) - 1) : c.holders,
-              volume24h: (c.volume24h || 0) + payout,
-              // avgBuyPrice 保持不变
-              attentionScore: calculateAttentionScore({ ...c, totalSupply: c.totalSupply - amount }),
-            };
-          }
-          return c;
-        });
-        saveCreatorsToStorage(updated);
-        return updated;
+      // 执行卖出
+      const hash = await walletClient.writeContract({
+        address: CREATOR_MARKET_ADDRESS as `0x${string}`,
+        abi: CREATOR_MARKET_ABI,
+        functionName: 'sellShares',
+        args: [handle, BigInt(amount)],
       });
 
+      await publicClient.waitForTransactionReceipt({ hash });
+
+      // 获取新价格
+      const newPrice = await publicClient.readContract({
+        address: CREATOR_MARKET_ADDRESS as `0x${string}`,
+        abi: CREATOR_MARKET_ABI,
+        functionName: 'getCurrentPrice',
+        args: [handle],
+      }) as bigint;
+
+      const priceNum = Number(formatUnits(newPrice, USDC_DECIMALS));
+      recordPricePoint(handle, priceNum);
+
       const creator = creators.find(c => c.handle.toLowerCase() === handle.toLowerCase());
-      if (creator) {
-        const newPrice = Math.max(1, creator.price - amount * 0.1);
-        recordPricePoint(handle, newPrice);
-      }
 
-      if (activityData) {
-        addActivity(activityData);
-      }
+      addActivity({
+        type: 'sell',
+        user: address || '',
+        creatorHandle: handle,
+        creatorName: creator?.displayName || handle,
+        amount,
+        price: Number(formatUnits(proceeds, USDC_DECIMALS)) / amount,
+        totalValue: Number(formatUnits(proceeds, USDC_DECIMALS)),
+        timestamp: Date.now(),
+      });
 
+      await fetchCreators();
       return true;
     } catch (error) {
       console.error('Sell shares failed:', error);
@@ -445,9 +749,74 @@ export function useCreatorMarket(walletAddress: string, isConnected: boolean) {
     } finally {
       setLoading(false);
     }
-  }, [walletAddress, creators, addActivity, recordPricePoint]);
+  }, [walletClient, publicClient, address, creators, recordPricePoint, addActivity, fetchCreators]);
 
-  // 获取排行榜数据（排序后的 creators）
+  // 🆕 获取价格影响预估
+  const estimatePriceImpact = useCallback(async (
+    handle: string, 
+    amount: number, 
+    isBuy: boolean
+  ): Promise<PriceImpact | null> => {
+    if (!publicClient || amount <= 0) return null;
+
+    try {
+      const result = await publicClient.readContract({
+        address: CREATOR_MARKET_ADDRESS as `0x${string}`,
+        abi: CREATOR_MARKET_ABI,
+        functionName: 'estimatePriceImpact',
+        args: [handle, BigInt(amount), isBuy],
+      }) as any;
+
+      return {
+        avgPrice: Number(formatUnits(result[0], USDC_DECIMALS)),
+        priceImpactBps: Number(result[1]),
+        priceImpactPercent: Number(result[1]) / 100,
+      };
+    } catch (error) {
+      console.error('Estimate price impact failed:', error);
+      return null;
+    }
+  }, [publicClient]);
+
+  // 🆕 获取购买价格（链上查询）
+  const getBuyPrice = useCallback(async (handle: string, amount: number): Promise<number> => {
+    if (!publicClient || amount <= 0) return 0;
+
+    try {
+      const cost = await publicClient.readContract({
+        address: CREATOR_MARKET_ADDRESS as `0x${string}`,
+        abi: CREATOR_MARKET_ABI,
+        functionName: 'getBuyPrice',
+        args: [handle, BigInt(amount)],
+      }) as bigint;
+
+      return Number(formatUnits(cost, USDC_DECIMALS));
+    } catch (error) {
+      console.error('Get buy price failed:', error);
+      return 0;
+    }
+  }, [publicClient]);
+
+  // 🆕 获取卖出价格（链上查询）
+  const getSellPrice = useCallback(async (handle: string, amount: number): Promise<number> => {
+    if (!publicClient || amount <= 0) return 0;
+
+    try {
+      const proceeds = await publicClient.readContract({
+        address: CREATOR_MARKET_ADDRESS as `0x${string}`,
+        abi: CREATOR_MARKET_ABI,
+        functionName: 'getSellPrice',
+        args: [handle, BigInt(amount)],
+      }) as bigint;
+
+      return Number(formatUnits(proceeds, USDC_DECIMALS));
+    } catch (error) {
+      console.error('Get sell price failed:', error);
+      return 0;
+    }
+  }, [publicClient]);
+
+  // 获取排行榜数据
   const getLeaderboard = useCallback((
     sortBy: 'score' | 'price' | 'holders' | 'volume' | 'change' = 'score',
     order: 'asc' | 'desc' = 'desc'
@@ -483,7 +852,7 @@ export function useCreatorMarket(walletAddress: string, isConnected: boolean) {
     return sorted;
   }, [creators]);
 
-  // 计算 Portfolio 统计
+  // Portfolio 统计
   const portfolioStats = useMemo((): PortfolioStats => {
     const holdings = creators
       .filter(c => c.userShares > 0)
@@ -518,7 +887,7 @@ export function useCreatorMarket(walletAddress: string, isConnected: boolean) {
     };
   }, [creators]);
 
-  // 获取特定 creator 的价格历史
+  // 获取价格历史
   const getPriceHistory = useCallback((handle: string): PricePoint[] => {
     return priceHistory[handle] || [];
   }, [priceHistory]);
@@ -535,33 +904,23 @@ export function useCreatorMarket(walletAddress: string, isConnected: boolean) {
       .slice(0, limit);
   }, [activities]);
 
-  // 删除 Creator（测试用）
-  const removeCreator = useCallback((handle: string) => {
-    setCreators((prev) => {
-      const updated = prev.filter(
-        (c) => c.handle.toLowerCase() !== handle.toLowerCase()
-      );
-      saveCreatorsToStorage(updated);
-      return updated;
-    });
-  }, []);
-
-  // 清空所有 Creators（测试用）
+  // 清空所有数据（测试用）
   const clearAllCreators = useCallback(() => {
     setCreators([]);
     setActivities([]);
     setPriceHistory({});
-    saveCreatorsToStorage([]);
+    setCreatorMeta({});
+    saveMetaToStorage({});
     saveActivitiesToStorage([]);
     savePriceHistoryToStorage({});
   }, []);
 
   // 初始化时加载数据
   useEffect(() => {
-    if (isConnected) {
+    if (connected && publicClient) {
       fetchCreators();
     }
-  }, [isConnected, fetchCreators]);
+  }, [connected, publicClient, fetchCreators]);
 
   return {
     // 数据
@@ -576,6 +935,11 @@ export function useCreatorMarket(walletAddress: string, isConnected: boolean) {
     sellShares,
     fetchCreators,
     
+    // 🆕 价格查询
+    getBuyPrice,
+    getSellPrice,
+    estimatePriceImpact,
+    
     // 查询方法
     getLeaderboard,
     getPriceHistory,
@@ -583,7 +947,9 @@ export function useCreatorMarket(walletAddress: string, isConnected: boolean) {
     getCreatorActivities,
     
     // 工具方法
-    removeCreator,
     clearAllCreators,
+    
+    // 🆕 导出枚举
+    CurveType,
   };
 }

@@ -11,10 +11,35 @@ import {
   Legend,
 } from 'recharts';
 
+// ============ 颜色配置 ============
+const OUTCOME_COLORS = [
+  '#22c55e', // green - Option A / Yes
+  '#ef4444', // red - Option B / No
+  '#3b82f6', // blue - Option C
+  '#a855f7', // purple - Option D
+  '#f97316', // orange - Option E
+  '#ec4899', // pink - Option F
+  '#14b8a6', // teal - Option G
+  '#eab308', // yellow - Option H
+];
+
+// ============ 类型定义 ============
+interface ProbabilityDataPoint {
+  time: string;
+  [key: string]: string | number; // 动态键：outcome_0, outcome_1, ...
+}
+
 interface ProbabilityChartProps {
-  data: { time: string; yes: number; no: number }[];
+  data: ProbabilityDataPoint[];
+  outcomeLabels?: string[];
   height?: number;
   showLegend?: boolean;
+}
+
+interface MiniProbabilityChartProps {
+  data: number[][]; // 每个时间点的各选项概率 [[50, 30, 20], [55, 25, 20], ...]
+  outcomeLabels?: string[];
+  height?: number;
 }
 
 // 统一的 Tooltip 样式
@@ -37,7 +62,13 @@ const tooltipStyles = {
   },
 };
 
-export function ProbabilityChart({ data, height = 120, showLegend = false }: ProbabilityChartProps) {
+// ============ 完整概率图（支持多选项） ============
+export function ProbabilityChart({ 
+  data, 
+  outcomeLabels = ['Yes', 'No'],
+  height = 120, 
+  showLegend = false 
+}: ProbabilityChartProps) {
   if (data.length < 2) {
     return (
       <div 
@@ -48,6 +79,9 @@ export function ProbabilityChart({ data, height = 120, showLegend = false }: Pro
       </div>
     );
   }
+
+  // 确定有多少个选项
+  const numOutcomes = outcomeLabels.length;
 
   return (
     <div style={{ height }} className="w-full">
@@ -71,7 +105,11 @@ export function ProbabilityChart({ data, height = 120, showLegend = false }: Pro
           <Tooltip
             formatter={(value: number | string | undefined, name: string | number | undefined) => {
               const numValue = typeof value === 'number' ? value : 0;
-              const label = name === 'yes' ? 'Yes' : name === 'no' ? 'No' : String(name);
+              // 从 outcome_0 提取索引，映射到标签
+              const idx = typeof name === 'string' && name.startsWith('outcome_') 
+                ? parseInt(name.split('_')[1]) 
+                : 0;
+              const label = outcomeLabels[idx] || String(name);
               return [`${numValue.toFixed(1)}%`, label];
             }}
             contentStyle={tooltipStyles.contentStyle}
@@ -86,39 +124,60 @@ export function ProbabilityChart({ data, height = 120, showLegend = false }: Pro
               height={24}
               iconType="circle"
               iconSize={8}
+              formatter={(value) => {
+                const idx = typeof value === 'string' && value.startsWith('outcome_') 
+                  ? parseInt(value.split('_')[1]) 
+                  : 0;
+                return outcomeLabels[idx] || value;
+              }}
             />
           )}
-          <Line
-            type="monotone"
-            dataKey="yes"
-            name="Yes"
-            stroke="#22c55e"
-            strokeWidth={2}
-            dot={false}
-            activeDot={{ r: 4, fill: '#22c55e', stroke: 'none' }}
-          />
-          <Line
-            type="monotone"
-            dataKey="no"
-            name="No"
-            stroke="#ef4444"
-            strokeWidth={2}
-            dot={false}
-            activeDot={{ r: 4, fill: '#ef4444', stroke: 'none' }}
-          />
+          {/* 动态生成每个选项的线 */}
+          {Array.from({ length: numOutcomes }).map((_, index) => (
+            <Line
+              key={index}
+              type="monotone"
+              dataKey={`outcome_${index}`}
+              name={`outcome_${index}`}
+              stroke={OUTCOME_COLORS[index % OUTCOME_COLORS.length]}
+              strokeWidth={2}
+              dot={false}
+              activeDot={{ 
+                r: 4, 
+                fill: OUTCOME_COLORS[index % OUTCOME_COLORS.length], 
+                stroke: 'none' 
+              }}
+            />
+          ))}
         </LineChart>
       </ResponsiveContainer>
     </div>
   );
 }
 
-// ========== 迷你版概率图（用于卡片预览） ==========
-export function MiniProbabilityChart({ data, height = 40 }: { data: number[]; height?: number }) {
+// ============ 迷你版概率图（支持多选项） ============
+export function MiniProbabilityChart({ 
+  data, 
+  outcomeLabels = ['Yes', 'No'],
+  height = 40 
+}: MiniProbabilityChartProps) {
   const chartData = useMemo(() => {
-    return data.map((yes, i) => ({ i, yes, no: 100 - yes }));
+    return data.map((probs, i) => {
+      const point: { i: number; [key: string]: number } = { i };
+      probs.forEach((prob, idx) => {
+        point[`outcome_${idx}`] = prob;
+      });
+      return point;
+    });
   }, [data]);
 
-  const isYesLeading = data.length > 0 && data[data.length - 1] > 50;
+  const numOutcomes = data[0]?.length || 2;
+
+  // 找出当前领先的选项
+  const lastPoint = data[data.length - 1];
+  const leadingIndex = lastPoint 
+    ? lastPoint.indexOf(Math.max(...lastPoint))
+    : 0;
 
   if (data.length < 2) {
     return <div style={{ height }} className="w-full" />;
@@ -129,57 +188,97 @@ export function MiniProbabilityChart({ data, height = 40 }: { data: number[]; he
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={chartData}>
           <YAxis domain={[0, 100]} hide />
-          <Line
-            type="monotone"
-            dataKey="yes"
-            stroke={isYesLeading ? '#22c55e' : '#9ca3af'}
-            strokeWidth={1.5}
-            dot={false}
-          />
-          <Line
-            type="monotone"
-            dataKey="no"
-            stroke={!isYesLeading ? '#ef4444' : '#9ca3af'}
-            strokeWidth={1.5}
-            dot={false}
-          />
+          {Array.from({ length: numOutcomes }).map((_, index) => (
+            <Line
+              key={index}
+              type="monotone"
+              dataKey={`outcome_${index}`}
+              stroke={
+                index === leadingIndex 
+                  ? OUTCOME_COLORS[index % OUTCOME_COLORS.length]
+                  : '#9ca3af'
+              }
+              strokeWidth={index === leadingIndex ? 2 : 1.5}
+              dot={false}
+            />
+          ))}
         </LineChart>
       </ResponsiveContainer>
     </div>
   );
 }
 
-// ========== 生成模拟概率历史的工具函数 ==========
+// ============ 生成模拟概率历史（支持多选项） ============
 export function generateMockProbabilityHistory(
-  currentYesPrice: number,
+  currentPrices: number[], // 当前各选项概率 [50, 30, 20]
   points: number = 12
-): { time: string; yes: number; no: number }[] {
-  const data: { time: string; yes: number; no: number }[] = [];
+): ProbabilityDataPoint[] {
+  const numOutcomes = currentPrices.length;
+  const data: ProbabilityDataPoint[] = [];
   
-  let yes = 30 + Math.random() * 40;
+  // 初始化概率（从平均值开始波动）
+  const avgPrice = 100 / numOutcomes;
+  let probs = currentPrices.map(() => avgPrice + (Math.random() - 0.5) * 20);
+  
+  // 归一化函数
+  const normalize = (arr: number[]): number[] => {
+    const sum = arr.reduce((a, b) => a + b, 0);
+    return arr.map(v => Math.max(1, Math.min(98, (v / sum) * 100)));
+  };
+  
+  probs = normalize(probs);
   
   const now = new Date();
   
   for (let i = points - 1; i >= 0; i--) {
     const time = new Date(now.getTime() - i * 2 * 60 * 60 * 1000);
-    const timeStr = time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+    const timeStr = time.toLocaleTimeString('en-US', { 
+      hour: '2-digit', 
+      minute: '2-digit', 
+      hour12: false 
+    });
     
-    const targetYes = currentYesPrice;
-    const randomWalk = (Math.random() - 0.5) * 15;
-    yes = yes + (targetYes - yes) * 0.3 + randomWalk;
-    yes = Math.max(5, Math.min(95, yes));
+    // 向目标价格移动 + 随机波动
+    probs = probs.map((prob, idx) => {
+      const target = currentPrices[idx];
+      const randomWalk = (Math.random() - 0.5) * 10;
+      return prob + (target - prob) * 0.25 + randomWalk;
+    });
     
-    data.push({
-      time: timeStr,
-      yes: Math.round(yes * 10) / 10,
-      no: Math.round((100 - yes) * 10) / 10,
+    probs = normalize(probs);
+    
+    const point: ProbabilityDataPoint = { time: timeStr };
+    probs.forEach((prob, idx) => {
+      point[`outcome_${idx}`] = Math.round(prob * 10) / 10;
+    });
+    
+    data.push(point);
+  }
+  
+  // 确保最后一个点是当前价格
+  if (data.length > 0) {
+    const normalizedCurrent = normalize([...currentPrices]);
+    normalizedCurrent.forEach((price, idx) => {
+      data[data.length - 1][`outcome_${idx}`] = price;
     });
   }
   
-  if (data.length > 0) {
-    data[data.length - 1].yes = currentYesPrice;
-    data[data.length - 1].no = 100 - currentYesPrice;
-  }
-  
   return data;
+}
+
+// ============ 生成迷你图数据格式（支持多选项） ============
+export function generateMiniProbabilityData(
+  currentPrices: number[],
+  points: number = 12
+): number[][] {
+  const fullData = generateMockProbabilityHistory(currentPrices, points);
+  return fullData.map(point => {
+    const probs: number[] = [];
+    let idx = 0;
+    while (point[`outcome_${idx}`] !== undefined) {
+      probs.push(point[`outcome_${idx}`] as number);
+      idx++;
+    }
+    return probs;
+  });
 }
