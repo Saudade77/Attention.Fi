@@ -15,7 +15,7 @@ interface Creator {
   followers?: number;
   attentionScore?: number;
   priceChange24h?: number;
-  priceHistory?: number[]; // 新增：价格历史数组
+  priceHistory?: number[];
 }
 
 interface CreatorCardProps {
@@ -49,7 +49,6 @@ export function CreatorCard({ creator, onBuy, onSell, isConnected, loading }: Cr
     if (creator.priceHistory && creator.priceHistory.length > 0) {
       return creator.priceHistory;
     }
-    // 如果没有真实数据，生成模拟数据
     return generatePriceHistory(creator.price, 7);
   }, [creator.priceHistory, creator.price]);
 
@@ -78,6 +77,24 @@ export function CreatorCard({ creator, onBuy, onSell, isConnected, loading }: Cr
       return () => clearTimeout(timer);
     }
   }, [creator.price, prevPrice]);
+
+  // 处理买入数量输入
+  const handleBuyAmountChange = (value: string) => {
+    // 只允许正整数
+    const num = value.replace(/[^0-9]/g, '');
+    setBuyAmount(num);
+  };
+
+  // 处理卖出数量输入
+  const handleSellAmountChange = (value: string) => {
+    const num = value.replace(/[^0-9]/g, '');
+    // 不能超过持有数量
+    if (num && parseInt(num) > creator.userShares) {
+      setSellAmount(creator.userShares.toString());
+    } else {
+      setSellAmount(num);
+    }
+  };
 
   const handleBuy = async () => {
     const amount = parseInt(buyAmount);
@@ -115,8 +132,10 @@ export function CreatorCard({ creator, onBuy, onSell, isConnected, loading }: Cr
     }
   };
 
-  const estimatedCost = parseFloat(buyAmount || '0') * creator.price * (1 + parseFloat(buyAmount || '0') * 0.02);
-  const estimatedReturn = parseFloat(sellAmount || '0') * creator.price * 0.95;
+  const parsedBuyAmount = parseInt(buyAmount) || 0;
+  const parsedSellAmount = parseInt(sellAmount) || 0;
+  const estimatedCost = parsedBuyAmount * creator.price * (1 + parsedBuyAmount * 0.02);
+  const estimatedReturn = parsedSellAmount * creator.price * 0.95;
   const attentionScore = twitterData?.attentionScore || creator.attentionScore || 0;
   const scoreLevel = getScoreLevel(attentionScore);
   const priceChange = creator.priceChange24h || (twitterData?.priceChange24h) || 0;
@@ -194,7 +213,7 @@ export function CreatorCard({ creator, onBuy, onSell, isConnected, loading }: Cr
           </div>
         </div>
 
-        {/* Stats Row - 修改版：添加迷你图 */}
+        {/* Stats Row */}
         <div className="grid grid-cols-4 gap-2 mt-4 text-center">
           {/* Price + Mini Chart */}
           <div className="p-2 bg-gray-50 dark:bg-gray-800/50 rounded-lg col-span-2">
@@ -338,36 +357,43 @@ export function CreatorCard({ creator, onBuy, onSell, isConnected, loading }: Cr
 
               {activeTab === 'buy' ? (
                 <div className="space-y-3">
-                  {/* Quick Amount Buttons */}
-                  <div className="flex gap-2">
-                    {[1, 5, 10, 25].map((val) => (
-                      <button
-                        key={val}
-                        onClick={() => setBuyAmount(val.toString())}
-                        className={`flex-1 py-2 rounded-lg text-sm font-semibold transition ${
-                          buyAmount === val.toString()
-                            ? 'bg-green-500 text-white'
-                            : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
-                        }`}
-                      >
-                        {val}
-                      </button>
-                    ))}
+                  {/* 数量输入框 - 替换原来的快速选择按钮 */}
+                  <div>
+                    <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
+                      Number of Keys
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={buyAmount}
+                        onChange={(e) => handleBuyAmountChange(e.target.value)}
+                        placeholder="Enter amount"
+                        className="w-full px-4 py-3 bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-gray-900 dark:text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-green-500 text-lg font-semibold pr-16"
+                      />
+                      <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 dark:text-gray-400 text-sm">
+                        keys
+                      </span>
+                    </div>
                   </div>
 
                   {/* Cost Estimate */}
                   <div className="p-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
                     <div className="flex justify-between text-sm mb-1">
                       <span className="text-gray-500">Amount</span>
-                      <span className="font-medium text-gray-900 dark:text-white">{buyAmount} keys</span>
+                      <span className="font-medium text-gray-900 dark:text-white">
+                        {parsedBuyAmount || 0} key{parsedBuyAmount !== 1 ? 's' : ''}
+                      </span>
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-gray-500">Est. total cost</span>
-                      <span className="font-bold text-gray-900 dark:text-white">${estimatedCost.toFixed(2)}</span>
+                      <span className="font-bold text-gray-900 dark:text-white">
+                        ${parsedBuyAmount > 0 ? estimatedCost.toFixed(2) : '0.00'}
+                      </span>
                     </div>
-                    {parseInt(buyAmount) > 5 && (
+                    {parsedBuyAmount > 5 && (
                       <div className="mt-2 text-xs text-orange-500 flex items-center gap-1">
-                        ⚠️ Price impact: ~{(parseInt(buyAmount) * 2).toFixed(0)}%
+                        ⚠️ Price impact: ~{(parsedBuyAmount * 2).toFixed(0)}%
                       </div>
                     )}
                   </div>
@@ -376,7 +402,7 @@ export function CreatorCard({ creator, onBuy, onSell, isConnected, loading }: Cr
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.98 }}
                     onClick={handleBuy}
-                    disabled={!isConnected || isProcessing || loading}
+                    disabled={!isConnected || isProcessing || loading || parsedBuyAmount <= 0}
                     className="w-full py-3.5 bg-gradient-to-r from-green-500 to-emerald-600 text-white font-bold rounded-xl shadow-lg disabled:opacity-50 transition-all flex items-center justify-center gap-2"
                   >
                     {isProcessing ? (
@@ -388,7 +414,7 @@ export function CreatorCard({ creator, onBuy, onSell, isConnected, loading }: Cr
                         Processing...
                       </>
                     ) : (
-                      `Buy ${buyAmount} Key${parseInt(buyAmount) > 1 ? 's' : ''}`
+                      `Buy ${parsedBuyAmount || 0} Key${parsedBuyAmount !== 1 ? 's' : ''}`
                     )}
                   </motion.button>
                 </div>
@@ -399,34 +425,48 @@ export function CreatorCard({ creator, onBuy, onSell, isConnected, loading }: Cr
                     Available: <span className="font-semibold text-gray-900 dark:text-white">{creator.userShares} keys</span>
                   </div>
 
-                  {/* Quick Sell Buttons */}
-                  <div className="flex gap-2">
-                    {[1, Math.floor(creator.userShares / 2), creator.userShares]
-                      .filter((v, i, a) => v > 0 && a.indexOf(v) === i)
-                      .map((val) => (
-                        <button
-                          key={val}
-                          onClick={() => setSellAmount(val.toString())}
-                          className={`flex-1 py-2 rounded-lg text-sm font-semibold transition ${
-                            sellAmount === val.toString()
-                              ? 'bg-red-500 text-white'
-                              : 'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700'
-                          }`}
-                        >
-                          {val === creator.userShares ? 'All' : val}
-                        </button>
-                      ))}
+                  {/* 卖出数量输入框 - 替换原来的快速选择按钮 */}
+                  <div>
+                    <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
+                      Number of Keys to Sell
+                    </label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        value={sellAmount}
+                        onChange={(e) => handleSellAmountChange(e.target.value)}
+                        placeholder="Enter amount"
+                        max={creator.userShares}
+                        className="w-full px-4 py-3 bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-gray-900 dark:text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-red-500 text-lg font-semibold pr-16"
+                      />
+                      <span className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 dark:text-gray-400 text-sm">
+                        keys
+                      </span>
+                    </div>
+                    {/* Max 按钮 */}
+                    <button
+                      type="button"
+                      onClick={() => setSellAmount(creator.userShares.toString())}
+                      className="mt-2 text-xs text-red-500 hover:text-red-600 font-medium"
+                    >
+                      Sell All ({creator.userShares} keys)
+                    </button>
                   </div>
 
                   {/* Return Estimate */}
                   <div className="p-3 bg-gray-50 dark:bg-gray-800/50 rounded-xl">
                     <div className="flex justify-between text-sm mb-1">
                       <span className="text-gray-500">Selling</span>
-                      <span className="font-medium text-gray-900 dark:text-white">{sellAmount} keys</span>
+                      <span className="font-medium text-gray-900 dark:text-white">
+                        {parsedSellAmount || 0} key{parsedSellAmount !== 1 ? 's' : ''}
+                      </span>
                     </div>
                     <div className="flex justify-between text-sm">
                       <span className="text-gray-500">You receive (after 5% fee)</span>
-                      <span className="font-bold text-green-600 dark:text-green-400">${estimatedReturn.toFixed(2)}</span>
+                      <span className="font-bold text-green-600 dark:text-green-400">
+                        ${parsedSellAmount > 0 ? estimatedReturn.toFixed(2) : '0.00'}
+                      </span>
                     </div>
                   </div>
 
@@ -434,7 +474,7 @@ export function CreatorCard({ creator, onBuy, onSell, isConnected, loading }: Cr
                     whileHover={{ scale: 1.02 }}
                     whileTap={{ scale: 0.98 }}
                     onClick={handleSell}
-                    disabled={!isConnected || isProcessing || loading || creator.userShares === 0}
+                    disabled={!isConnected || isProcessing || loading || parsedSellAmount <= 0 || parsedSellAmount > creator.userShares}
                     className="w-full py-3.5 bg-gradient-to-r from-red-500 to-rose-600 text-white font-bold rounded-xl shadow-lg disabled:opacity-50 transition-all flex items-center justify-center gap-2"
                   >
                     {isProcessing ? (
@@ -446,7 +486,7 @@ export function CreatorCard({ creator, onBuy, onSell, isConnected, loading }: Cr
                         Processing...
                       </>
                     ) : (
-                      `Sell ${sellAmount} Key${parseInt(sellAmount) > 1 ? 's' : ''}`
+                      `Sell ${parsedSellAmount || 0} Key${parsedSellAmount !== 1 ? 's' : ''}`
                     )}
                   </motion.button>
                 </div>

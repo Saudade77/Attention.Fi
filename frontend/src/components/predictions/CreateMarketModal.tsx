@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 
 interface CreateMarketModalProps {
   isOpen: boolean;
@@ -24,11 +24,35 @@ const CATEGORIES = [
   { value: 'tech', label: '💻 Tech', color: 'from-purple-500 to-violet-500' },
 ];
 
+// 格式化日期为 datetime-local 输入框所需格式
+const formatDateTimeLocal = (date: Date): string => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+};
+
+// 格式化日期用于显示
+const formatDisplayDate = (dateStr: string): string => {
+  if (!dateStr) return '';
+  const date = new Date(dateStr);
+  return date.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
 export function CreateMarketModal({ isOpen, onClose, onCreate }: CreateMarketModalProps) {
   const [question, setQuestion] = useState('');
   const [category, setCategory] = useState('crypto');
   const [imageUrl, setImageUrl] = useState('');
-  const [durationDays, setDurationDays] = useState('7');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
   const [initialLiquidity, setInitialLiquidity] = useState('100');
   const [creatorFee, setCreatorFee] = useState('1');
   const [marketType, setMarketType] = useState<'binary' | 'multi'>('binary');
@@ -36,7 +60,37 @@ export function CreateMarketModal({ isOpen, onClose, onCreate }: CreateMarketMod
   const [outcomeLabels, setOutcomeLabels] = useState<string[]>(['Option A', 'Option B', 'Option C']);
   const [loading, setLoading] = useState(false);
 
+  // 初始化默认日期（开始：现在，结束：7天后）
+  useEffect(() => {
+    if (isOpen) {
+      const now = new Date();
+      const defaultEnd = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+      setStartDate(formatDateTimeLocal(now));
+      setEndDate(formatDateTimeLocal(defaultEnd));
+    }
+  }, [isOpen]);
+
   if (!isOpen) return null;
+
+  // 计算持续天数
+  const calculateDurationDays = (): number => {
+    if (!startDate || !endDate) return 0;
+    const start = new Date(startDate).getTime();
+    const end = new Date(endDate).getTime();
+    const diffMs = end - start;
+    return Math.max(0, Math.ceil(diffMs / (24 * 60 * 60 * 1000)));
+  };
+
+  const durationDays = calculateDurationDays();
+
+  // 验证日期
+  const isDateValid = (): boolean => {
+    if (!startDate || !endDate) return false;
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    const now = new Date();
+    return end > start && end > now;
+  };
 
   const handleNumOutcomesChange = (num: number) => {
     setNumOutcomes(num);
@@ -56,6 +110,11 @@ export function CreateMarketModal({ isOpen, onClose, onCreate }: CreateMarketMod
     e.preventDefault();
     if (!question || !category) return;
 
+    if (!isDateValid()) {
+      alert('Please select valid start and end dates. End date must be after start date and in the future.');
+      return;
+    }
+
     // 验证多选项标签
     if (marketType === 'multi') {
       if (outcomeLabels.slice(0, numOutcomes).some(l => !l.trim())) {
@@ -74,7 +133,7 @@ export function CreateMarketModal({ isOpen, onClose, onCreate }: CreateMarketMod
         question,
         category,
         imageUrl,
-        parseInt(durationDays),
+        durationDays,
         initialLiquidity,
         parseInt(creatorFee) * 100,
         labels
@@ -84,7 +143,6 @@ export function CreateMarketModal({ isOpen, onClose, onCreate }: CreateMarketMod
       setQuestion('');
       setCategory('crypto');
       setImageUrl('');
-      setDurationDays('7');
       setInitialLiquidity('100');
       setCreatorFee('1');
       setMarketType('binary');
@@ -95,6 +153,18 @@ export function CreateMarketModal({ isOpen, onClose, onCreate }: CreateMarketMod
     } finally {
       setLoading(false);
     }
+  };
+
+  // 获取最小开始时间（现在）
+  const getMinStartDate = (): string => {
+    return formatDateTimeLocal(new Date());
+  };
+
+  // 获取最小结束时间（开始时间后1小时，或现在后1小时）
+  const getMinEndDate = (): string => {
+    const baseTime = startDate ? new Date(startDate) : new Date();
+    const minEnd = new Date(baseTime.getTime() + 60 * 60 * 1000); // 至少1小时后
+    return formatDateTimeLocal(minEnd);
   };
 
   return (
@@ -241,26 +311,62 @@ export function CreateMarketModal({ isOpen, onClose, onCreate }: CreateMarketMod
             />
           </div>
 
-          {/* Duration */}
+          {/* Date Selection - 新的日期选择器 */}
           <div>
             <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-              Duration
+              Market Duration
             </label>
-            <div className="grid grid-cols-5 gap-2">
-              {['1', '3', '7', '14', '30'].map((d) => (
-                <button
-                  key={d}
-                  type="button"
-                  onClick={() => setDurationDays(d)}
-                  className={`py-3 rounded-xl font-medium transition-all ${
-                    durationDays === d
-                      ? 'bg-blue-600 text-white shadow-lg'
-                      : 'bg-gray-100 dark:bg-gray-800 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700'
-                  }`}
-                >
-                  {d}d
-                </button>
-              ))}
+            <div className="space-y-3">
+              {/* Start Date */}
+              <div>
+                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
+                  Start Date & Time
+                </label>
+                <input
+                  type="datetime-local"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                  min={getMinStartDate()}
+                  className="w-full px-4 py-3 bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 [color-scheme:light] dark:[color-scheme:dark]"
+                  required
+                />
+              </div>
+
+              {/* End Date */}
+              <div>
+                <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
+                  End Date & Time
+                </label>
+                <input
+                  type="datetime-local"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                  min={getMinEndDate()}
+                  className="w-full px-4 py-3 bg-gray-100 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-xl text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500 [color-scheme:light] dark:[color-scheme:dark]"
+                  required
+                />
+              </div>
+
+              {/* Duration Info */}
+              {startDate && endDate && (
+                <div className={`p-3 rounded-xl text-sm ${
+                  isDateValid()
+                    ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300'
+                    : 'bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300'
+                }`}>
+                  {isDateValid() ? (
+                    <div className="flex items-center gap-2">
+                      <span>⏱️</span>
+                      <span>Duration: <strong>{durationDays} day{durationDays !== 1 ? 's' : ''}</strong></span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <span>⚠️</span>
+                      <span>End date must be after start date and in the future</span>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </div>
 
@@ -319,10 +425,17 @@ export function CreateMarketModal({ isOpen, onClose, onCreate }: CreateMarketMod
             </div>
             <div className="flex flex-wrap gap-2 text-sm text-gray-500 dark:text-gray-400 mb-2">
               <span>📁 {category}</span>
-              <span>⏱️ {durationDays} days</span>
+              <span>⏱️ {durationDays} day{durationDays !== 1 ? 's' : ''}</span>
               <span>💰 ${initialLiquidity}</span>
               <span>💸 {creatorFee}% fee</span>
             </div>
+            {/* 显示具体日期 */}
+            {startDate && endDate && (
+              <div className="text-xs text-gray-500 dark:text-gray-400 mt-2 pt-2 border-t border-gray-200 dark:border-gray-700">
+                <div>📅 Start: {formatDisplayDate(startDate)}</div>
+                <div>🏁 End: {formatDisplayDate(endDate)}</div>
+              </div>
+            )}
             {marketType === 'multi' && (
               <div className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-700">
                 <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">Outcomes:</div>
@@ -340,7 +453,7 @@ export function CreateMarketModal({ isOpen, onClose, onCreate }: CreateMarketMod
           {/* Submit */}
           <button
             type="submit"
-            disabled={loading || !question}
+            disabled={loading || !question || !isDateValid()}
             className="w-full py-4 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white rounded-xl font-bold text-lg shadow-lg hover:shadow-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {loading ? (
