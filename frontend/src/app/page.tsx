@@ -154,19 +154,34 @@ export default function Home() {
       return;
     }
 
-    if (creators.some(c => c.handle.toLowerCase() === handle.toLowerCase())) {
-      alert(`@${handle} has already been launched!`);
-      return;
-    }
-
     setTwitterLoading(true);
     try {
       const res = await fetch(`/api/twitter/user?handle=${encodeURIComponent(handle)}`);
       const data = await res.json();
 
       if (!res.ok) {
-        alert(data.error || `Twitter user @${handle} not found`);
+        // ✅ 特殊处理 429
+        if (res.status === 429 || data.code === 'RATE_LIMITED') {
+          alert(
+            `Twitter API rate limit reached.\n\n` +
+            `Please wait 30-60 seconds and try again.\n` +
+            `(This is a temporary limit, not your monthly quota)`
+          );
+          return;
+        }
+        
+        alert(data.error || `User @${handle} not found`);
         return;
+      }
+
+      // ⚠️ 检查是否是过期缓存数据
+      if (data._stale) {
+        const proceed = confirm(
+          `Using cached data for @${handle} (API temporarily unavailable).\n\n` +
+          `Followers: ${data.followers.toLocaleString()}\n\n` +
+          `Continue with this data?`
+        );
+        if (!proceed) return;
       }
 
       if (data.followers < 100) {
@@ -177,8 +192,7 @@ export default function Home() {
       setTwitterPreview(data);
       setShowConfirmModal(true);
     } catch (error: any) {
-      console.error(error);
-      alert('Failed to verify Twitter user. Please try again.');
+      alert('Network error. Please try again.');
     } finally {
       setTwitterLoading(false);
     }
