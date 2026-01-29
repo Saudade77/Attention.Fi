@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useEffect, useMemo } from 'react';
+import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAccount, usePublicClient, useWalletClient } from 'wagmi';
 import { parseUnits, formatUnits } from 'viem';
 import { 
@@ -248,6 +248,7 @@ export interface PriceImpact {
 const META_STORAGE_KEY = 'attention_fi_creator_meta';
 const ACTIVITY_STORAGE_KEY = 'attention_fi_activities';
 const PRICE_HISTORY_KEY = 'attention_fi_price_history';
+const REFRESHED_KEY = 'attention_fi_refreshed_handles'; // 新增：记录已刷新的 handle
 
 // ============ 工具函数 ============
 function getCurveTypeName(curveType: number): string {
@@ -328,6 +329,31 @@ function savePriceHistory(history: Record<string, PricePoint[]>) {
   localStorage.setItem(PRICE_HISTORY_KEY, JSON.stringify(history));
 }
 
+// 新增：加载已刷新的 handle 列表（24小时内）
+function loadRefreshedHandles(): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const data = JSON.parse(localStorage.getItem(REFRESHED_KEY) || '{}');
+    const now = Date.now();
+    const validHandles = Object.entries(data)
+      .filter(([_, timestamp]) => now - (timestamp as number) < 24 * 60 * 60 * 1000)
+      .map(([handle]) => handle);
+    return new Set(validHandles);
+  } catch {
+    return new Set();
+  }
+}
+
+// 新增：保存已刷新的 handle
+function markAsRefreshed(handle: string) {
+  if (typeof window === 'undefined') return;
+  try {
+    const data = JSON.parse(localStorage.getItem(REFRESHED_KEY) || '{}');
+    data[handle.toLowerCase()] = Date.now();
+    localStorage.setItem(REFRESHED_KEY, JSON.stringify(data));
+  } catch {}
+}
+
 // ============ Hook ============
 export function useCreatorMarket() {
   const { address } = useAccount();
@@ -339,28 +365,31 @@ export function useCreatorMarket() {
   const [priceHistory, setPriceHistory] = useState<Record<string, PricePoint[]>>({});
   const [loading, setLoading] = useState(false);
   const [metaCache, setMetaCache] = useState<Record<string, any>>({});
+  
+  // 新增：防止重复刷新
+  const isRefreshing = useRef(false);
+  const refreshedInSession = useRef<Set<string>>(new Set());
 
-  // ============ 修复1: 保存元数据到 localStorage + Redis ============
+  // ============ 保存元数据到 localStorage + Redis ============
   const saveCreatorMeta = useCallback(async (handle: string, data: Partial<Creator>) => {
-    // 更新本地缓存
+    const normalizedHandle = handle.toLowerCase();
     const meta = loadMeta();
     const newData = {
-      ...meta[handle.toLowerCase()],
+      ...meta[normalizedHandle],
       ...data,
-      handle,
+      handle: normalizedHandle,
       lastUpdated: Date.now(),
     };
-    meta[handle.toLowerCase()] = newData;
+    meta[normalizedHandle] = newData;
     saveMeta(meta);
     setMetaCache(meta);
 
-    // 同步到 Redis 后端
     try {
       await fetch('/api/creators', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          handle,
+          handle: normalizedHandle,
           displayName: data.displayName,
           avatar: data.avatar,
           followers: data.followers,
@@ -375,70 +404,120 @@ export function useCreatorMarket() {
     }
   }, []);
 
-  // ============ 批量刷新缺失的 Twitter 数据 ============
-  const refreshMissingTwitterData = useCallback(async (handles: string[]) => {
-    const BATCH_SIZE = 3;
-    const DELAY_MS = 1000;
-
-    console.log(`🔄 Starting refresh for ${handles.length} creators...`);
-
-    for (let i = 0; i < handles.length; i += BATCH_SIZE) {
-      const batch = handles.slice(i, i + BATCH_SIZE);
+  // ============ 单个 handle 刷新（带重试） ============
+  const refreshSingleHandle = useCallback(async (handle: string, retryCount = 0): Promise<boolean> => {
+    const normalizedHandle = handle.toLowerCase();
+    const MAX_RETRIES = 2;
+    
+    try {
+      const res = await fetch(
+        `/api/creators/${encodeURIComponent(normalizedHandle)}?refresh=true&t=${Date.now()}`, 
+        { cache: 'no-store' }
+      );
       
-      await Promise.all(batch.map(async (handle) => {
-        try {
-          // 修复2: 添加时间戳防止缓存
-          const res = await fetch(
-            `/api/creators/${encodeURIComponent(handle)}?refresh=true&t=${Date.now()}`, 
-            { cache: 'no-store' }
-          );
-          
-          if (res.ok) {
-            const data = await res.json();
-            console.log(`✅ Refreshed @${handle}: ${data.followers?.toLocaleString() || 0} followers, Score: ${data.attentionScore || 'N/A'}`);
-            
-            // 更新本地缓存
-            const meta = loadMeta();
-            meta[handle.toLowerCase()] = {
-              ...meta[handle.toLowerCase()],
-              ...data,
-            };
-            saveMeta(meta);
-            
-            // 更新 state
-            setCreators(prev => prev.map(c => {
-              if (c.handle.toLowerCase() === handle.toLowerCase()) {
-                const updated: Creator = {
-                  ...c,
-                  displayName: getSafeDisplayName(data.displayName, handle),
-                  avatar: data.avatar || c.avatar,
-                  followers: data.followers || 0,
-                  following: data.following || 0,
-                  tweets: data.tweets || 0,
-                  verified: data.verified || false,
-                  _metaLoaded: true,
-                };
-                // 使用 API 返回的 attentionScore 或重新计算
-                updated.attentionScore = data.attentionScore || calculateAttentionScore(updated);
-                return updated;
-              }
-              return c;
-            }));
-          } else {
-            console.warn(`⚠️ Failed to refresh @${handle}: ${res.status}`);
-          }
-        } catch (e) {
-          console.error(`❌ Error refreshing @${handle}:`, e);
+      if (res.status === 429) {
+        // 429 限流：等待后重试
+        if (retryCount < MAX_RETRIES) {
+          const waitTime = (retryCount + 1) * 5000; // 5秒, 10秒
+          console.log(`⏳ Rate limited for @${handle}, waiting ${waitTime/1000}s before retry...`);
+          await new Promise(r => setTimeout(r, waitTime));
+          return refreshSingleHandle(handle, retryCount + 1);
         }
-      }));
+        console.warn(`⚠️ Max retries reached for @${handle}`);
+        return false;
+      }
+      
+      if (res.ok) {
+        const data = await res.json();
+        console.log(`✅ Refreshed @${handle}: ${data.followers?.toLocaleString() || 0} followers, Score: ${data.attentionScore || 'N/A'}`);
+        
+        // 更新本地缓存
+        const meta = loadMeta();
+        meta[normalizedHandle] = {
+          ...meta[normalizedHandle],
+          ...data,
+        };
+        saveMeta(meta);
+        markAsRefreshed(normalizedHandle);
+        refreshedInSession.current.add(normalizedHandle);
+        
+        // 更新 state
+        setCreators(prev => prev.map(c => {
+          if (c.handle.toLowerCase() === normalizedHandle) {
+            const updated: Creator = {
+              ...c,
+              displayName: getSafeDisplayName(data.displayName, handle),
+              avatar: data.avatar || c.avatar,
+              followers: data.followers || 0,
+              following: data.following || 0,
+              tweets: data.tweets || 0,
+              verified: data.verified || false,
+              _metaLoaded: true,
+            };
+            updated.attentionScore = data.attentionScore || calculateAttentionScore(updated);
+            return updated;
+          }
+          return c;
+        }));
+        
+        return true;
+      } else {
+        console.warn(`⚠️ Failed to refresh @${handle}: ${res.status}`);
+        return false;
+      }
+    } catch (e) {
+      console.error(`❌ Error refreshing @${handle}:`, e);
+      return false;
+    }
+  }, []);
 
-      if (i + BATCH_SIZE < handles.length) {
+  // ============ 批量刷新缺失的 Twitter 数据（优化版） ============
+  const refreshMissingTwitterData = useCallback(async (handles: string[]) => {
+    // 防止并发刷新
+    if (isRefreshing.current) {
+      console.log('⏸️ Refresh already in progress, skipping...');
+      return;
+    }
+    
+    // 过滤已刷新的
+    const alreadyRefreshed = loadRefreshedHandles();
+    const toRefresh = handles.filter(h => {
+      const normalized = h.toLowerCase();
+      return !alreadyRefreshed.has(normalized) && !refreshedInSession.current.has(normalized);
+    });
+    
+    if (toRefresh.length === 0) {
+      console.log('✅ All creators already refreshed');
+      return;
+    }
+    
+    // 限制首次加载的刷新数量，避免触发 429
+    const MAX_INITIAL_REFRESH = 5;
+    const limitedRefresh = toRefresh.slice(0, MAX_INITIAL_REFRESH);
+    
+    if (toRefresh.length > MAX_INITIAL_REFRESH) {
+      console.log(`📝 Queued ${toRefresh.length} creators, refreshing first ${MAX_INITIAL_REFRESH}`);
+    }
+    
+    isRefreshing.current = true;
+    console.log(`🔄 Starting refresh for ${limitedRefresh.length} creators...`);
+
+    const DELAY_MS = 3000; // 3秒间隔，避免 429
+
+    for (let i = 0; i < limitedRefresh.length; i++) {
+      const handle = limitedRefresh[i];
+      
+      await refreshSingleHandle(handle);
+      
+      // 每个请求之间等待
+      if (i < limitedRefresh.length - 1) {
         await new Promise(r => setTimeout(r, DELAY_MS));
       }
     }
     
-    console.log(`✅ Refresh complete for ${handles.length} creators`);
-  }, []);
+    isRefreshing.current = false;
+    console.log(`✅ Refresh complete for ${limitedRefresh.length} creators`);
+  }, [refreshSingleHandle]);
 
   // ============ 从链上获取列表 + 从 API 获取元数据 ============
   const fetchCreators = useCallback(async () => {
@@ -460,15 +539,16 @@ export function useCreatorMarket() {
 
       const [apiCreatorsData, count] = await Promise.all([apiMetaPromise, countPromise]);
 
-      console.log(`📊 Found ${count} creators on-chain, ${apiCreatorsData.length} in Redis`);
+      console.log(`📊 Found ${count} creators on-chain, ${Array.isArray(apiCreatorsData) ? apiCreatorsData.length : 0} in Redis`);
 
       // 建立元数据映射表
       const metaMap: Record<string, any> = { ...localMeta };
       if (Array.isArray(apiCreatorsData)) {
         apiCreatorsData.forEach((item: any) => {
           if (item && item.handle) {
-            metaMap[item.handle.toLowerCase()] = {
-              ...metaMap[item.handle.toLowerCase()],
+            const normalizedHandle = item.handle.toLowerCase();
+            metaMap[normalizedHandle] = {
+              ...metaMap[normalizedHandle],
               ...item,
               _fromApi: true
             };
@@ -512,16 +592,18 @@ export function useCreatorMarket() {
             } catch {}
           }
 
-          const meta = metaMap[handle.toLowerCase()] || {};
+          // 统一小写查找
+          const normalizedHandle = handle.toLowerCase();
+          const meta = metaMap[normalizedHandle] || {};
           const hasValidData = meta.followers > 0 || meta.tweets > 0;
 
           // 检测是否需要刷新
           if (!hasValidData) {
-            needsRefresh.push(handle);
+            needsRefresh.push(normalizedHandle);
           }
 
           const creator: Creator = {
-            handle,
+            handle, // 保留原始 handle（可能含大写）
             displayName: getSafeDisplayName(meta.displayName, handle),
             avatar: meta.avatar || `https://unavatar.io/twitter/${handle}`,
             totalSupply: Number(info[1]),
@@ -538,7 +620,7 @@ export function useCreatorMarket() {
             tweets: meta.tweets || 0,
             verified: meta.verified || false,
             launchedAt: meta.launchedAt || Date.now(),
-            attentionScore: meta.attentionScore || 0, // 先用 API 返回的值
+            attentionScore: meta.attentionScore || 0,
             priceChange24h: meta.priceChange24h || 0,
             holders: meta.holders || Math.max(1, Math.floor(Number(info[1]) * 0.7)),
             volume24h: meta.volume24h || Number(formatUnits(info[2], USDC_DECIMALS)) * 0.1,
@@ -546,7 +628,6 @@ export function useCreatorMarket() {
             _metaLoaded: hasValidData,
           };
 
-          // 如果 API 没有返回 attentionScore，则计算
           if (!creator.attentionScore) {
             creator.attentionScore = calculateAttentionScore(creator);
           }
@@ -561,13 +642,12 @@ export function useCreatorMarket() {
       setActivities(loadActivities());
       setPriceHistory(loadPriceHistory());
 
-      // 后台自动刷新缺失数据
+      // 后台自动刷新缺失数据（延迟执行，不阻塞 UI）
       if (needsRefresh.length > 0) {
         console.log(`🔄 ${needsRefresh.length} creators need Twitter data refresh`);
-        // 使用 setTimeout 确保不阻塞 UI
         setTimeout(() => {
           refreshMissingTwitterData(needsRefresh);
-        }, 100);
+        }, 500);
       }
 
     } catch (error) {
@@ -579,53 +659,8 @@ export function useCreatorMarket() {
 
   // ============ 按需刷新单个 Creator ============
   const refreshTwitterData = useCallback(async (handle: string): Promise<boolean> => {
-    try {
-      const res = await fetch(`/api/creators/${encodeURIComponent(handle)}?refresh=true&t=${Date.now()}`, {
-        cache: 'no-store'
-      });
-      
-      if (!res.ok) {
-        console.warn(`Failed to refresh Twitter data for @${handle}: ${res.status}`);
-        return false;
-      }
-
-      const data = await res.json();
-      
-      // 更新 localStorage
-      const meta = loadMeta();
-      meta[handle.toLowerCase()] = {
-        ...meta[handle.toLowerCase()],
-        ...data,
-        lastUpdated: Date.now(),
-      };
-      saveMeta(meta);
-      setMetaCache(meta);
-
-      // 更新 state
-      setCreators(prev => prev.map(c => {
-        if (c.handle.toLowerCase() === handle.toLowerCase()) {
-          const updated: Creator = {
-            ...c,
-            displayName: getSafeDisplayName(data.displayName, handle),
-            avatar: data.avatar || c.avatar,
-            followers: data.followers || c.followers,
-            following: data.following || c.following,
-            tweets: data.tweets || c.tweets,
-            verified: data.verified || c.verified,
-            _metaLoaded: true,
-          };
-          updated.attentionScore = data.attentionScore || calculateAttentionScore(updated);
-          return updated;
-        }
-        return c;
-      }));
-
-      return true;
-    } catch (error) {
-      console.error(`Error refreshing Twitter data for @${handle}:`, error);
-      return false;
-    }
-  }, []);
+    return refreshSingleHandle(handle);
+  }, [refreshSingleHandle]);
 
   // ============ 确保 USDC allowance ============
   const ensureAllowance = useCallback(async (requiredAmount: bigint) => {
@@ -673,7 +708,7 @@ export function useCreatorMarket() {
     });
   }, []);
 
-  // ============ 注册 Creator (修复3: 同步到 Redis) ============
+  // ============ 注册 Creator ============
   const registerCreator = useCallback(async (
     handle: string,
     twitterData?: {
@@ -727,7 +762,6 @@ export function useCreatorMarket() {
 
       await publicClient.waitForTransactionReceipt({ hash });
 
-      // 保存 Twitter 元数据到 localStorage + Redis
       const displayName = getSafeDisplayName(twitterData?.displayName, handle);
       await saveCreatorMeta(handle, {
         displayName,

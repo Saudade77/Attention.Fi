@@ -42,19 +42,32 @@ async function fetchFromTwitterApi(handle: string) {
 
   const user = json.data;
 
+  const followers = user.followers || user.followersCount || user.followers_count || 0;
+  const tweets = user.tweets || user.statusesCount || user.statuses_count || 0;
+  const engagement = user.favourites || user.favouritesCount || user.favourites_count || 0;
+  const attentionScore = calculateAttentionScore(followers, tweets, engagement);
+
   return {
     handle: user.userName || user.screenName || handle,
     displayName: user.name || handle,
     avatar: (user.profileImageUrl || user.profile_image_url_https || '')
       .replace('_normal', '_400x400') || `https://unavatar.io/twitter/${handle}`,
-    followers: user.followers || user.followersCount || user.followers_count || 0,
+    followers,
     following: user.following || user.friendsCount || user.friends_count || 0,
-    tweets: user.tweets || user.statusesCount || user.statuses_count || 0,
+    tweets,
     verified: user.verified || user.isBlueVerified || false,
     description: user.description || '',
     createdAt: user.createdAt || user.created_at || '',
     updatedAt: Date.now(),
+    attentionScore,
   };
+}
+
+function calculateAttentionScore(followers: number, tweets: number, engagement: number): number {
+  const followerScore = Math.min(Math.log10(followers + 1) * 100, 400);
+  const engagementScore = Math.min(Math.log10(tweets + 1) * 50, 200);
+  const marketScore = Math.min(Math.log10(engagement + 1) * 50, 200);
+  return Math.round(followerScore + engagementScore + marketScore);
 }
 
 function isCacheValid(creator: any): boolean {
@@ -63,11 +76,14 @@ function isCacheValid(creator: any): boolean {
 }
 
 // ============ GET: 获取单个 Creator ============
+// 🔧 修复: Next.js 15 中 params 是 Promise
 export async function GET(
   request: NextRequest,
-  { params }: { params: { handle: string } }
+  context: { params: Promise<{ handle: string }> }
 ) {
-  const handle = params.handle.toLowerCase().replace(/^@+/, '');
+  // 🔧 关键修复: await params
+  const { handle: rawHandle } = await context.params;
+  const handle = rawHandle.toLowerCase().replace(/^@+/, '');
   
   if (!/^[A-Za-z0-9_]{1,15}$/.test(handle)) {
     return NextResponse.json({ error: 'Invalid handle format' }, { status: 400 });
@@ -95,7 +111,7 @@ export async function GET(
     // 保存到 Redis
     await redis.hset(CREATORS_KEY, { [handle]: JSON.stringify(freshData) });
     
-    console.log(`✅ @${handle}: ${freshData.followers.toLocaleString()} followers`);
+    console.log(`✅ @${handle}: ${freshData.followers.toLocaleString()} followers, Score: ${freshData.attentionScore}`);
     
     return NextResponse.json(freshData, {
       headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },
@@ -123,10 +139,11 @@ export async function GET(
 // ============ PUT: 更新 Creator 数据 ============
 export async function PUT(
   request: NextRequest,
-  { params }: { params: { handle: string } }
+  context: { params: Promise<{ handle: string }> }
 ) {
   try {
-    const handle = params.handle.toLowerCase().replace(/^@+/, '');
+    const { handle: rawHandle } = await context.params;
+    const handle = rawHandle.toLowerCase().replace(/^@+/, '');
     const body = await request.json();
     
     const cachedStr = await redis.hget(CREATORS_KEY, handle) as string | null;
@@ -150,10 +167,11 @@ export async function PUT(
 // ============ DELETE: 删除 Creator ============
 export async function DELETE(
   request: NextRequest,
-  { params }: { params: { handle: string } }
+  context: { params: Promise<{ handle: string }> }
 ) {
   try {
-    const handle = params.handle.toLowerCase();
+    const { handle: rawHandle } = await context.params;
+    const handle = rawHandle.toLowerCase();
     await redis.hdel(CREATORS_KEY, handle);
     return NextResponse.json({ success: true });
   } catch (error: any) {

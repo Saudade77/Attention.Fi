@@ -9,17 +9,21 @@ import {
   lightTheme,
   Theme,
 } from '@rainbow-me/rainbowkit';
-import { WagmiProvider } from 'wagmi';
+import { WagmiProvider, http } from 'wagmi';
 import { sepolia } from 'wagmi/chains';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useState, useEffect } from 'react';
 import { useTheme } from 'next-themes';
 
-// config 放在组件外部，只创建一次
+// 使用更稳定的公共 RPC 节点（替换默认的 thirdweb）
 const config = getDefaultConfig({
   appName: 'Attention.Fi',
   projectId: process.env.NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID || '',
   chains: [sepolia],
+  transports: {
+    // 使用多个备用 RPC，避免单点限流
+    [sepolia.id]: http('https://ethereum-sepolia-rpc.publicnode.com'),
+  },
   ssr: true,
 });
 
@@ -69,7 +73,6 @@ function RainbowKitWrapper({ children }: { children: React.ReactNode }) {
     setMounted(true);
   }, []);
 
-  // 根据当前主题选择 RainbowKit 主题
   const rainbowTheme = mounted && resolvedTheme === 'light' 
     ? customLightTheme 
     : customDarkTheme;
@@ -89,7 +92,7 @@ export function Web3Provider({ children }: { children: React.ReactNode }) {
   const [queryClient] = useState(() => new QueryClient({
     defaultOptions: {
       queries: {
-        staleTime: 1000 * 60, // 1 minute
+        staleTime: 1000 * 60,
         refetchOnWindowFocus: false,
       },
     },
@@ -105,7 +108,6 @@ export function Web3Provider({ children }: { children: React.ReactNode }) {
       <QueryClientProvider client={queryClient}>
         <RainbowKitWrapper>
           {mounted ? children : (
-            // 加载占位符，防止闪烁
             <div className="min-h-screen bg-gray-50 dark:bg-[#05060b]" />
           )}
         </RainbowKitWrapper>
