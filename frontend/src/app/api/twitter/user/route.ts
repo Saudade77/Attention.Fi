@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+// ============ 禁用 Next.js 缓存 ============
+export const dynamic = 'force-dynamic';
+
 // ============ 类型定义 ============
 type TwitterUserData = {
   handle: string;
@@ -76,7 +79,6 @@ async function fetchTwitterUser(clean: string): Promise<TwitterUserData> {
     throw Object.assign(new Error('TWITTERAPI_IO_KEY not configured'), { status: 500 });
   }
 
-  // twitterapi.io 的 API 地址
   const url = `https://api.twitterapi.io/twitter/user/info?userName=${encodeURIComponent(clean)}`;
   let lastErr: any = null;
 
@@ -101,7 +103,6 @@ async function fetchTwitterUser(clean: string): Promise<TwitterUserData> {
 
       console.log(`📡 twitterapi.io response for @${clean}: ${response.status} (attempt ${attempt + 1})`);
 
-      // 处理速率限制
       if (response.status === 429) {
         lastErr = Object.assign(new Error('Rate limited by twitterapi.io'), { status: 429 });
         if (attempt < MAX_RETRIES) continue;
@@ -116,14 +117,12 @@ async function fetchTwitterUser(clean: string): Promise<TwitterUserData> {
 
       const json = await response.json();
 
-      // twitterapi.io 的响应结构：{ status: "success", data: {...}, msg: "ok" }
       if (json.status !== 'success' || !json.data) {
         throw Object.assign(new Error(json.msg || 'User not found'), { status: 404 });
       }
 
       const user = json.data;
 
-      // 根据 twitterapi.io 的响应字段映射
       const parsed: TwitterUserData = {
         handle: user.userName || user.screenName || clean,
         displayName: user.name || clean,
@@ -173,7 +172,7 @@ export async function GET(request: NextRequest) {
   if (cached?.kind === 'fresh') {
     console.log(`📦 Cache HIT (fresh) for @${clean}`);
     return NextResponse.json(cached.entry.data, {
-      headers: { 'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400' },
+      headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },
     });
   }
 
@@ -181,7 +180,9 @@ export async function GET(request: NextRequest) {
   if (inflight.has(key)) {
     try {
       const data = await inflight.get(key)!;
-      return NextResponse.json(data);
+      return NextResponse.json(data, {
+        headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },
+      });
     } catch (e: any) {
       if (cached?.kind === 'stale') {
         console.log(`📦 Using stale cache for @${clean} due to error`);
@@ -203,7 +204,7 @@ export async function GET(request: NextRequest) {
   try {
     const data = await p;
     return NextResponse.json(data, {
-      headers: { 'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400' },
+      headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },
     });
   } catch (e: any) {
     const status = e?.status || 500;
