@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
 
+// ============ 禁用 Next.js 缓存 ============
+export const dynamic = 'force-dynamic';
+
 // ============ Upstash Redis 客户端 ============
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -13,7 +16,11 @@ const CREATORS_KEY = 'creators';
 export async function GET() {
   try {
     const creators = await redis.hgetall(CREATORS_KEY) || {};
-    return NextResponse.json(Object.values(creators));
+    return NextResponse.json(Object.values(creators), {
+      headers: {
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+      },
+    });
   } catch (error) {
     console.error('Failed to fetch creators:', error);
     return NextResponse.json([]);

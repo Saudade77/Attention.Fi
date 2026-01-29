@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { Redis } from '@upstash/redis';
 
+// ============ 禁用 Next.js 缓存 ============
+export const dynamic = 'force-dynamic';
+
 // ============ Upstash Redis 客户端 ============
 const redis = new Redis({
   url: process.env.UPSTASH_REDIS_REST_URL!,
@@ -81,7 +84,7 @@ export async function GET(
     if (!needsFetch && cached) {
       console.log(`📦 Redis cache HIT for @${handle}`);
       return NextResponse.json(cached, {
-        headers: { 'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400' },
+        headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },
       });
     }
 
@@ -95,7 +98,7 @@ export async function GET(
     console.log(`✅ @${handle}: ${freshData.followers.toLocaleString()} followers`);
     
     return NextResponse.json(freshData, {
-      headers: { 'Cache-Control': 'public, s-maxage=3600, stale-while-revalidate=86400' },
+      headers: { 'Cache-Control': 'no-store, no-cache, must-revalidate' },
     });
   } catch (error: any) {
     console.error(`❌ Failed to fetch @${handle}:`, error.message);
