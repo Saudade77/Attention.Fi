@@ -212,30 +212,3 @@ main().catch((error) => {
   process.exitCode = 1;
 });
 
-// 在部署脚本末尾添加
-const { execSync } = require('child_process');
-
-async function updateVercelEnv(key, value) {
-  try {
-    // 需要先安装 vercel CLI: npm i -g vercel
-    execSync(`vercel env rm ${key} production -y`, { stdio: 'ignore' });
-    execSync(`echo "${value}" | vercel env add ${key} production`, { stdio: 'inherit' });
-    console.log(`✅ Updated Vercel env: ${key}`);
-  } catch (e) {
-    console.log(`⚠️ Failed to update Vercel env ${key}:`, e.message);
-  }
-}
-
-async function updateRailwayEnv(key, value) {
-  try {
-    // 需要先安装 railway CLI: npm i -g @railway/cli
-    execSync(`railway variables set ${key}="${value}"`, { stdio: 'inherit' });
-    console.log(`✅ Updated Railway env: ${key}`);
-  } catch (e) {
-    console.log(`⚠️ Failed to update Railway env ${key}:`, e.message);
-  }
-}
-
-// 在部署成功后调用
-// await updateVercelEnv('CREATOR_MARKET_ADDRESS', creatorMarketAddress);
-// await updateRailwayEnv('CREATOR_MARKET_ADDRESS', creatorMarketAddress);
