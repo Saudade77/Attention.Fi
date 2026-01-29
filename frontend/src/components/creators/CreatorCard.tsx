@@ -52,21 +52,43 @@ export function CreatorCard({ creator, onBuy, onSell, isConnected, loading }: Cr
     return generatePriceHistory(creator.price, 7);
   }, [creator.priceHistory, creator.price]);
 
-  // 获取 Twitter 数据
+  // 获取 Twitter 数据 - 使用新的统一 API
   useEffect(() => {
     async function fetchTwitterData() {
+      // 如果 creator 已经有完整数据，直接使用
+      if (creator.followers && creator.followers > 0) {
+        setTwitterData({
+          displayName: creator.displayName,
+          avatar: creator.avatar,
+          followers: creator.followers,
+          attentionScore: creator.attentionScore,
+          priceChange24h: creator.priceChange24h,
+        });
+        return;
+      }
+
       try {
-        const res = await fetch(`/api/twitter/verify?handle=${creator.handle}`);
+        // 使用新的统一 API
+        const res = await fetch(`/api/creators?handle=${encodeURIComponent(creator.handle.toLowerCase())}`);
         if (res.ok) {
           const data = await res.json();
-          setTwitterData(data);
+          // 处理返回数据（可能有 _noData 标记表示没有 Twitter 数据）
+          if (!data._noData && !data.error) {
+            setTwitterData({
+              displayName: data.displayName,
+              avatar: data.avatar,
+              followers: data.followers || 0,
+              attentionScore: data.attentionScore || 0,
+              priceChange24h: data.priceChange24h || 0,
+            });
+          }
         }
       } catch (e) {
-        console.log('Failed to fetch Twitter data');
+        console.log('Failed to fetch Twitter data for', creator.handle);
       }
     }
     fetchTwitterData();
-  }, [creator.handle]);
+  }, [creator.handle, creator.followers, creator.displayName, creator.avatar, creator.attentionScore, creator.priceChange24h]);
 
   // 监听价格变化
   useEffect(() => {
@@ -80,7 +102,6 @@ export function CreatorCard({ creator, onBuy, onSell, isConnected, loading }: Cr
 
   // 处理买入数量输入
   const handleBuyAmountChange = (value: string) => {
-    // 只允许正整数
     const num = value.replace(/[^0-9]/g, '');
     setBuyAmount(num);
   };
@@ -88,7 +109,6 @@ export function CreatorCard({ creator, onBuy, onSell, isConnected, loading }: Cr
   // 处理卖出数量输入
   const handleSellAmountChange = (value: string) => {
     const num = value.replace(/[^0-9]/g, '');
-    // 不能超过持有数量
     if (num && parseInt(num) > creator.userShares) {
       setSellAmount(creator.userShares.toString());
     } else {
@@ -357,7 +377,7 @@ export function CreatorCard({ creator, onBuy, onSell, isConnected, loading }: Cr
 
               {activeTab === 'buy' ? (
                 <div className="space-y-3">
-                  {/* 数量输入框 - 替换原来的快速选择按钮 */}
+                  {/* 数量输入框 */}
                   <div>
                     <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
                       Number of Keys
@@ -425,7 +445,7 @@ export function CreatorCard({ creator, onBuy, onSell, isConnected, loading }: Cr
                     Available: <span className="font-semibold text-gray-900 dark:text-white">{creator.userShares} keys</span>
                   </div>
 
-                  {/* 卖出数量输入框 - 替换原来的快速选择按钮 */}
+                  {/* 卖出数量输入框 */}
                   <div>
                     <label className="block text-xs text-gray-500 dark:text-gray-400 mb-1">
                       Number of Keys to Sell

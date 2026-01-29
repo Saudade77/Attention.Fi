@@ -21,6 +21,14 @@ interface LaunchCreatorProps {
   usdcBalance: string;
 }
 
+// 根据粉丝数计算建议流动性
+function getSuggestedLiquidity(followers: number): number {
+  if (followers > 1000000) return 1000;
+  if (followers > 100000) return 500;
+  if (followers > 10000) return 100;
+  return 50;
+}
+
 export function LaunchCreator({ onLaunch, isConnected, usdcBalance }: LaunchCreatorProps) {
   const [handle, setHandle] = useState('');
   const [twitterUser, setTwitterUser] = useState<TwitterUser | null>(null);
@@ -29,7 +37,7 @@ export function LaunchCreator({ onLaunch, isConnected, usdcBalance }: LaunchCrea
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState('');
 
-  // 验证 Twitter 用户
+  // 验证 Twitter 用户 - 使用新的统一 API
   const verifyTwitter = async () => {
     if (!handle.trim()) return;
 
@@ -38,16 +46,38 @@ export function LaunchCreator({ onLaunch, isConnected, usdcBalance }: LaunchCrea
     setTwitterUser(null);
 
     try {
-      const res = await fetch(`/api/twitter/verify?handle=${handle.replace('@', '')}`);
+      // 使用新的统一 API，refresh=true 确保获取最新数据
+      const normalizedHandle = handle.replace('@', '').toLowerCase();
+      const res = await fetch(`/api/creators?handle=${encodeURIComponent(normalizedHandle)}&refresh=true`);
       const data = await res.json();
 
-      if (!res.ok) {
+      if (!res.ok || data.error) {
         setError(data.error || 'User not found');
         return;
       }
 
-      setTwitterUser(data);
-      setLiquidity(data.suggestedLiquidity.toString());
+      // 如果返回 _noData 表示无法获取 Twitter 数据
+      if (data._noData) {
+        setError('Could not fetch Twitter data. You can still launch this creator.');
+      }
+
+      // 转换为组件期望的格式
+      const followers = data.followers || 0;
+      const suggestedLiquidity = getSuggestedLiquidity(followers);
+
+      setTwitterUser({
+        valid: true,
+        handle: data.handle || normalizedHandle,
+        displayName: data.displayName || `@${normalizedHandle}`,
+        avatar: data.avatar || `https://unavatar.io/twitter/${normalizedHandle}`,
+        followers: followers,
+        following: data.following || 0,
+        tweets: data.tweets || 0,
+        verified: data.verified || false,
+        attentionScore: data.attentionScore || 0,
+        suggestedLiquidity: suggestedLiquidity,
+      });
+      setLiquidity(suggestedLiquidity.toString());
     } catch (err) {
       setError('Failed to verify Twitter user');
     } finally {
@@ -121,8 +151,11 @@ export function LaunchCreator({ onLaunch, isConnected, usdcBalance }: LaunchCrea
               )}
             </button>
           </div>
-          {error && (
+          {error && !twitterUser && (
             <p className="text-red-500 text-sm mt-2">❌ {error}</p>
+          )}
+          {error && twitterUser && (
+            <p className="text-yellow-500 text-sm mt-2">⚠️ {error}</p>
           )}
         </div>
 
@@ -134,6 +167,9 @@ export function LaunchCreator({ onLaunch, isConnected, usdcBalance }: LaunchCrea
                 src={twitterUser.avatar}
                 alt={twitterUser.handle}
                 className="w-16 h-16 rounded-full border-2 border-green-500"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).src = `https://unavatar.io/twitter/${twitterUser.handle}`;
+                }}
               />
               <div className="flex-1">
                 <div className="flex items-center gap-2">
