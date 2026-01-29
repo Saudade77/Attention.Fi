@@ -1,3 +1,5 @@
+'use client';
+
 import { useState, useCallback, useEffect, useMemo } from 'react';
 import { useAccount, usePublicClient, useWalletClient } from 'wagmi';
 import { parseUnits, formatUnits } from 'viem';
@@ -5,16 +7,13 @@ import {
   CREATOR_MARKET_ADDRESS, 
   USDC_ADDRESS, 
   USDC_DECIMALS,
+  CurveType,
 } from '@/constants/config';
 
-// ============ 曲线类型枚举 ============
-export enum CurveType {
-  LINEAR = 0,      // 线性: price = A * supply + B
-  EXPONENTIAL = 1, // 指数: price = B + A * supply²
-  SIGMOID = 2,     // S型: 早期慢 -> 中期快 -> 后期慢
-}
+// ============ 导出曲线类型（从 config 重新导出） ============
+export { CurveType } from '@/constants/config';
 
-// ============ ABI 定义 ============
+// ============ ABI 定义（基于 CreatorMarketV3.sol） ============
 const CREATOR_MARKET_ABI = [
   // === 查询函数 ===
   {
@@ -209,13 +208,13 @@ export interface Creator {
   tweets?: number;
   verified?: boolean;
   launchedAt?: number;
-  // 曲线配置
+  // 曲线配置（链上数据）
   curveType: CurveType;
   curveTypeName: string;
   curveA: bigint;
   curveB: bigint;
   inflectionPoint: bigint;
-  // 统计
+  // 统计（部分从元数据计算）
   attentionScore?: number;
   priceChange24h?: number;
   holders?: number;
@@ -261,11 +260,12 @@ export interface PriceImpact {
   priceImpactPercent: number;
 }
 
-// ============ 辅助函数 ============
-const STORAGE_KEY = 'attention_fi_creators_meta';
+// ============ localStorage 仅用于缓存元数据 ============
+const META_STORAGE_KEY = 'attention_fi_creator_meta';
 const ACTIVITY_STORAGE_KEY = 'attention_fi_activities';
 const PRICE_HISTORY_KEY = 'attention_fi_price_history';
 
+// 曲线名称映射
 function getCurveTypeName(curveType: number): string {
   switch (curveType) {
     case 0: return 'Linear';
@@ -275,6 +275,7 @@ function getCurveTypeName(curveType: number): string {
   }
 }
 
+// 安全获取显示名称
 function getSafeDisplayName(displayName?: string, handle?: string): string {
   const name = displayName?.trim();
   const invalidNames = ['unknown', '', 'null', 'undefined', '(null)'];
@@ -290,6 +291,7 @@ function getSafeDisplayName(displayName?: string, handle?: string): string {
   return 'Anonymous';
 }
 
+// 计算 Attention Score
 function calculateAttentionScore(creator: Creator): number {
   const followers = creator.followers || 0;
   const tweets = creator.tweets || 0;
@@ -308,11 +310,11 @@ function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 }
 
-// localStorage 工具
+// localStorage 工具函数
 function loadMetaFromStorage(): Record<string, any> {
   if (typeof window === 'undefined') return {};
   try {
-    const data = localStorage.getItem(STORAGE_KEY);
+    const data = localStorage.getItem(META_STORAGE_KEY);
     return data ? JSON.parse(data) : {};
   } catch {
     return {};
@@ -321,7 +323,7 @@ function loadMetaFromStorage(): Record<string, any> {
 
 function saveMetaToStorage(meta: Record<string, any>) {
   if (typeof window === 'undefined') return;
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(meta));
+  localStorage.setItem(META_STORAGE_KEY, JSON.stringify(meta));
 }
 
 function loadActivitiesFromStorage(): Activity[] {
@@ -371,39 +373,17 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
   const [loading, setLoading] = useState(false);
   const [creatorMeta, setCreatorMeta] = useState<Record<string, any>>({});
 
-  // 确保 USDC allowance
-  const ensureAllowance = useCallback(async (requiredAmount: bigint) => {
-    if (!publicClient || !walletClient || !address) return;
-
-    const currentAllowance = await publicClient.readContract({
-      address: USDC_ADDRESS as `0x${string}`,
-      abi: USDC_ABI,
-      functionName: 'allowance',
-      args: [address as `0x${string}`, CREATOR_MARKET_ADDRESS as `0x${string}`],
-    }) as bigint;
-
-    if (currentAllowance < requiredAmount) {
-      const approveAmount = requiredAmount * 10n;
-      const hash = await walletClient.writeContract({
-        address: USDC_ADDRESS as `0x${string}`,
-        abi: USDC_ABI,
-        functionName: 'approve',
-        args: [CREATOR_MARKET_ADDRESS as `0x${string}`, approveAmount],
-      });
-      await publicClient.waitForTransactionReceipt({ hash });
-    }
-  }, [publicClient, walletClient, address]);
-
-  // 获取 Creator 列表（从链上 + localStorage 元数据）
+  // ============ 核心：从链上获取 Creator 列表 ============
   const fetchCreators = useCallback(async () => {
-    if (!connected || !publicClient) return;
+    if (!publicClient) return;
     
     setLoading(true);
     try {
+      // 加载本地元数据缓存
       const meta = loadMetaFromStorage();
       setCreatorMeta(meta);
 
-      // 获取链上 creator 数量
+      // 1. 获取链上 creator 数量
       const count = await publicClient.readContract({
         address: CREATOR_MARKET_ADDRESS as `0x${string}`,
         abi: CREATOR_MARKET_ABI,
@@ -412,6 +392,7 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
 
       const list: Creator[] = [];
 
+      // 2. 逐个获取 creator 信息
       for (let i = 0; i < Number(count); i++) {
         try {
           // 获取 handle
@@ -422,17 +403,17 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
             args: [BigInt(i)],
           }) as string;
 
-          // 获取链上信息
+          // 获取链上完整信息
           const info = await publicClient.readContract({
             address: CREATOR_MARKET_ADDRESS as `0x${string}`,
             abi: CREATOR_MARKET_ABI,
             functionName: 'getCreatorInfo',
             args: [handle],
-          }) as any;
+          }) as readonly [boolean, bigint, bigint, bigint, number, bigint, bigint, bigint];
 
           if (!info[0]) continue; // exists check
 
-          // 获取用户份额
+          // 获取用户持仓
           let userShares = 0n;
           if (address) {
             try {
@@ -442,31 +423,35 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
                 functionName: 'getUserShares',
                 args: [handle, address as `0x${string}`],
               }) as bigint;
-            } catch {}
+            } catch {
+              // 忽略错误
+            }
           }
 
-          // 合并链上数据 + 本地元数据
+          // 从本地缓存获取元数据（Twitter 信息等）
           const localMeta = meta[handle.toLowerCase()] || {};
 
           const creator: Creator = {
             handle,
             displayName: getSafeDisplayName(localMeta.displayName, handle),
             avatar: localMeta.avatar || '',
+            // 链上数据
             totalSupply: Number(info[1]),
             poolBalance: Number(formatUnits(info[2], USDC_DECIMALS)),
             price: Number(formatUnits(info[3], USDC_DECIMALS)),
             userShares: Number(userShares),
-            followers: localMeta.followers || 0,
-            following: localMeta.following || 0,
-            tweets: localMeta.tweets || 0,
-            verified: localMeta.verified || false,
-            launchedAt: localMeta.launchedAt || Date.now(),
-            // 曲线配置
+            // 曲线配置（链上）
             curveType: Number(info[4]) as CurveType,
             curveTypeName: getCurveTypeName(Number(info[4])),
             curveA: info[5],
             curveB: info[6],
             inflectionPoint: info[7],
+            // 元数据（本地缓存）
+            followers: localMeta.followers || 0,
+            following: localMeta.following || 0,
+            tweets: localMeta.tweets || 0,
+            verified: localMeta.verified || false,
+            launchedAt: localMeta.launchedAt || Date.now(),
             // 统计
             attentionScore: 0,
             priceChange24h: localMeta.priceChange24h || 0,
@@ -490,9 +475,32 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
     } finally {
       setLoading(false);
     }
-  }, [connected, publicClient, address]);
+  }, [publicClient, address]);
 
-  // 添加活动记录
+  // 确保 USDC allowance
+  const ensureAllowance = useCallback(async (requiredAmount: bigint) => {
+    if (!publicClient || !walletClient || !address) return;
+
+    const currentAllowance = await publicClient.readContract({
+      address: USDC_ADDRESS as `0x${string}`,
+      abi: USDC_ABI,
+      functionName: 'allowance',
+      args: [address as `0x${string}`, CREATOR_MARKET_ADDRESS as `0x${string}`],
+    }) as bigint;
+
+    if (currentAllowance < requiredAmount) {
+      const approveAmount = requiredAmount * 10n;
+      const hash = await walletClient.writeContract({
+        address: USDC_ADDRESS as `0x${string}`,
+        abi: USDC_ABI,
+        functionName: 'approve',
+        args: [CREATOR_MARKET_ADDRESS as `0x${string}`, approveAmount],
+      });
+      await publicClient.waitForTransactionReceipt({ hash });
+    }
+  }, [publicClient, walletClient, address]);
+
+  // 添加活动记录（本地）
   const addActivity = useCallback((activity: Omit<Activity, 'id'>) => {
     const newActivity: Activity = {
       ...activity,
@@ -508,7 +516,7 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
     return newActivity;
   }, []);
 
-  // 记录价格历史
+  // 记录价格历史（本地）
   const recordPricePoint = useCallback((handle: string, price: number) => {
     setPriceHistory(prev => {
       const history = prev[handle] || [];
@@ -536,7 +544,7 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
     setCreatorMeta(meta);
   }, []);
 
-  // 🆕 注册新 Creator（支持曲线选择）
+  // ============ 注册新 Creator（链上） ============
   const registerCreator = useCallback(async (
     handle: string,
     twitterData?: {
@@ -562,8 +570,8 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
 
       if (curveConfig && curveConfig.curveType !== undefined) {
         // 使用自定义曲线
-        const A = curveConfig.A ? BigInt(curveConfig.A) : BigInt(1e4);
-        const B = curveConfig.B ? parseUnits(curveConfig.B, USDC_DECIMALS) : BigInt(1e6);
+        const A = curveConfig.A ? BigInt(curveConfig.A) : BigInt(10000); // DEFAULT_A
+        const B = curveConfig.B ? parseUnits(curveConfig.B, USDC_DECIMALS) : BigInt(1000000); // DEFAULT_B
         
         if (curveConfig.inflectionPoint) {
           // 完整参数
@@ -594,7 +602,7 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
 
       await publicClient.waitForTransactionReceipt({ hash });
 
-      // 保存元数据到 localStorage
+      // 保存 Twitter 元数据到 localStorage
       const safeDisplayName = getSafeDisplayName(twitterData?.displayName, handle);
       saveCreatorMeta(handle, {
         displayName: safeDisplayName,
@@ -606,7 +614,7 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
         launchedAt: Date.now(),
       });
 
-      // 添加 launch 活动
+      // 添加 launch 活动记录
       addActivity({
         type: 'launch',
         user: address || '',
@@ -618,6 +626,7 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
         timestamp: Date.now(),
       });
 
+      // 重新获取链上数据
       await fetchCreators();
       return true;
     } catch (error) {
@@ -628,7 +637,7 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
     }
   }, [walletClient, publicClient, address, saveCreatorMeta, addActivity, fetchCreators]);
 
-  // 购买 Creator 份额
+  // ============ 购买份额（链上） ============
   const buyShares = useCallback(async (handle: string, amount: number): Promise<boolean> => {
     if (amount <= 0 || !walletClient || !publicClient) return false;
     setLoading(true);
@@ -648,7 +657,7 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
       // 确保 allowance
       await ensureAllowance(totalCost);
 
-      // 执行购买
+      // 执行链上购买
       const hash = await walletClient.writeContract({
         address: CREATOR_MARKET_ADDRESS as `0x${string}`,
         abi: CREATOR_MARKET_ABI,
@@ -658,7 +667,7 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
 
       await publicClient.waitForTransactionReceipt({ hash });
 
-      // 获取新价格
+      // 获取新价格并记录
       const newPrice = await publicClient.readContract({
         address: CREATOR_MARKET_ADDRESS as `0x${string}`,
         abi: CREATOR_MARKET_ABI,
@@ -669,9 +678,8 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
       const priceNum = Number(formatUnits(newPrice, USDC_DECIMALS));
       recordPricePoint(handle, priceNum);
 
-      // 查找 creator 获取名称
+      // 记录活动
       const creator = creators.find(c => c.handle.toLowerCase() === handle.toLowerCase());
-      
       addActivity({
         type: 'buy',
         user: address || '',
@@ -683,6 +691,7 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
         timestamp: Date.now(),
       });
 
+      // 重新获取链上数据
       await fetchCreators();
       return true;
     } catch (error) {
@@ -693,7 +702,7 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
     }
   }, [walletClient, publicClient, address, ensureAllowance, creators, recordPricePoint, addActivity, fetchCreators]);
 
-  // 卖出 Creator 份额
+  // ============ 卖出份额（链上） ============
   const sellShares = useCallback(async (handle: string, amount: number): Promise<boolean> => {
     if (amount <= 0 || !walletClient || !publicClient) return false;
     setLoading(true);
@@ -707,7 +716,7 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
         args: [handle, BigInt(amount)],
       }) as bigint;
 
-      // 执行卖出
+      // 执行链上卖出
       const hash = await walletClient.writeContract({
         address: CREATOR_MARKET_ADDRESS as `0x${string}`,
         abi: CREATOR_MARKET_ABI,
@@ -717,7 +726,7 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
 
       await publicClient.waitForTransactionReceipt({ hash });
 
-      // 获取新价格
+      // 获取新价格并记录
       const newPrice = await publicClient.readContract({
         address: CREATOR_MARKET_ADDRESS as `0x${string}`,
         abi: CREATOR_MARKET_ABI,
@@ -728,8 +737,8 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
       const priceNum = Number(formatUnits(newPrice, USDC_DECIMALS));
       recordPricePoint(handle, priceNum);
 
+      // 记录活动
       const creator = creators.find(c => c.handle.toLowerCase() === handle.toLowerCase());
-
       addActivity({
         type: 'sell',
         user: address || '',
@@ -741,6 +750,7 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
         timestamp: Date.now(),
       });
 
+      // 重新获取链上数据
       await fetchCreators();
       return true;
     } catch (error) {
@@ -751,34 +761,7 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
     }
   }, [walletClient, publicClient, address, creators, recordPricePoint, addActivity, fetchCreators]);
 
-  // 🆕 获取价格影响预估
-  const estimatePriceImpact = useCallback(async (
-    handle: string, 
-    amount: number, 
-    isBuy: boolean
-  ): Promise<PriceImpact | null> => {
-    if (!publicClient || amount <= 0) return null;
-
-    try {
-      const result = await publicClient.readContract({
-        address: CREATOR_MARKET_ADDRESS as `0x${string}`,
-        abi: CREATOR_MARKET_ABI,
-        functionName: 'estimatePriceImpact',
-        args: [handle, BigInt(amount), isBuy],
-      }) as any;
-
-      return {
-        avgPrice: Number(formatUnits(result[0], USDC_DECIMALS)),
-        priceImpactBps: Number(result[1]),
-        priceImpactPercent: Number(result[1]) / 100,
-      };
-    } catch (error) {
-      console.error('Estimate price impact failed:', error);
-      return null;
-    }
-  }, [publicClient]);
-
-  // 🆕 获取购买价格（链上查询）
+  // ============ 价格查询（链上） ============
   const getBuyPrice = useCallback(async (handle: string, amount: number): Promise<number> => {
     if (!publicClient || amount <= 0) return 0;
 
@@ -797,7 +780,6 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
     }
   }, [publicClient]);
 
-  // 🆕 获取卖出价格（链上查询）
   const getSellPrice = useCallback(async (handle: string, amount: number): Promise<number> => {
     if (!publicClient || amount <= 0) return 0;
 
@@ -816,7 +798,33 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
     }
   }, [publicClient]);
 
-  // 获取排行榜数据
+  const estimatePriceImpact = useCallback(async (
+    handle: string, 
+    amount: number, 
+    isBuy: boolean
+  ): Promise<PriceImpact | null> => {
+    if (!publicClient || amount <= 0) return null;
+
+    try {
+      const result = await publicClient.readContract({
+        address: CREATOR_MARKET_ADDRESS as `0x${string}`,
+        abi: CREATOR_MARKET_ABI,
+        functionName: 'estimatePriceImpact',
+        args: [handle, BigInt(amount), isBuy],
+      }) as readonly [bigint, bigint];
+
+      return {
+        avgPrice: Number(formatUnits(result[0], USDC_DECIMALS)),
+        priceImpactBps: Number(result[1]),
+        priceImpactPercent: Number(result[1]) / 100,
+      };
+    } catch (error) {
+      console.error('Estimate price impact failed:', error);
+      return null;
+    }
+  }, [publicClient]);
+
+  // ============ 排行榜 ============
   const getLeaderboard = useCallback((
     sortBy: 'score' | 'price' | 'holders' | 'volume' | 'change' = 'score',
     order: 'asc' | 'desc' = 'desc'
@@ -852,7 +860,7 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
     return sorted;
   }, [creators]);
 
-  // Portfolio 统计
+  // ============ Portfolio 统计 ============
   const portfolioStats = useMemo((): PortfolioStats => {
     const holdings = creators
       .filter(c => c.userShares > 0)
@@ -887,12 +895,12 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
     };
   }, [creators]);
 
-  // 获取价格历史
+  // 获取价格历史（本地缓存）
   const getPriceHistory = useCallback((handle: string): PricePoint[] => {
     return priceHistory[handle] || [];
   }, [priceHistory]);
 
-  // 获取最近活动
+  // 获取最近活动（本地缓存）
   const getRecentActivities = useCallback((limit: number = 20): Activity[] => {
     return activities.slice(0, limit);
   }, [activities]);
@@ -904,9 +912,8 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
       .slice(0, limit);
   }, [activities]);
 
-  // 清空所有数据（测试用）
-  const clearAllCreators = useCallback(() => {
-    setCreators([]);
+  // 清空本地缓存（不影响链上数据）
+  const clearLocalCache = useCallback(() => {
     setActivities([]);
     setPriceHistory({});
     setCreatorMeta({});
@@ -915,12 +922,19 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
     savePriceHistoryToStorage({});
   }, []);
 
-  // 初始化时加载数据
+  // ============ 初始化：只要有 publicClient 就加载链上数据 ============
   useEffect(() => {
-    if (connected && publicClient) {
+    if (publicClient) {
       fetchCreators();
     }
-  }, [connected, publicClient, fetchCreators]);
+  }, [publicClient, fetchCreators]);
+
+  // 当钱包地址变化时重新获取用户持仓
+  useEffect(() => {
+    if (publicClient && address) {
+      fetchCreators();
+    }
+  }, [publicClient, address, fetchCreators]);
 
   return {
     // 数据
@@ -929,13 +943,13 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
     portfolioStats,
     loading,
     
-    // 核心操作
+    // 核心操作（链上）
     registerCreator,
     buyShares,
     sellShares,
     fetchCreators,
     
-    // 🆕 价格查询
+    // 价格查询（链上）
     getBuyPrice,
     getSellPrice,
     estimatePriceImpact,
@@ -947,9 +961,6 @@ export function useCreatorMarket(walletAddress?: string, isConnected?: boolean) 
     getCreatorActivities,
     
     // 工具方法
-    clearAllCreators,
-    
-    // 🆕 导出枚举
-    CurveType,
+    clearLocalCache,
   };
 }
