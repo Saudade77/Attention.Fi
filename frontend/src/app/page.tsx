@@ -98,7 +98,7 @@ export default function Home() {
     getLeaderboard,
     getCreatorActivities,
     getPriceHistory: getCreatorPriceHistory,
-  } = useCreatorMarket(address, isConnected);
+  } = useCreatorMarket();
 
   useEffect(() => {
     if (isConnected) {

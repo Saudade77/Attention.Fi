@@ -884,6 +884,8 @@ export function useCreatorMarket() {
     if (publicClient && address) {
       fetchCreators();
     }
+    // address 变化时重新获取用户持仓数据
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [address]);
 
   return {
